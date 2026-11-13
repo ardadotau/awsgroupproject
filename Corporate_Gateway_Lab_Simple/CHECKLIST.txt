@@ -1,0 +1,20 @@
+EVIDENCE CHECKLIST (real deployed stack — capture before teardown)
+
+01 Portal login + successful dummy upload (no password visible)
+02 S3 object private/encrypted + matching DB/upload record
+03 Two Healthy targets, instance IDs, two different AZs
+04 Same records/session from both servers
+05 CloudWatch dashboard with real metrics + time range visible
+06 HealthyHostCount alarm config + OK baseline
+07 SNS subscription Confirmed
+08 Failure test: one target unhealthy/stopped, service still usable
+09 ALARM state/history + actual SNS email with timestamp
+10 probe.py CSV (optional but strong): requests / failures / servers
+11 Recovery: two Healthy + OK / recovery email
+12 2:30 video: live UI + availability demo
+13 Report: disclose self-signed cert warning + single-NAT egress trade-off
+
+Cleanup after evidence:
+- Delete CloudFormation stack
+- Empty ALL S3 object versions/delete markers, then delete bucket
+- Check no leftover NAT / EIP / ALB / RDS
