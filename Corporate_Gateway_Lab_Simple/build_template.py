@@ -145,21 +145,68 @@ def template(bundle):
         }
         opening='''#!/bin/bash
 set -Eeuo pipefail
-dnf install -y aws-cfn-bootstrap
+exec > >(tee -a /var/log/gateway-userdata.log) 2>&1
+phase() { printf '%s\\n' "$1" | tee /var/log/gateway-setup-stage; }
+fail() { printf '%s\\n' "$1" | tee /var/log/gateway-setup-error >&2; exit 1; }
+phase userdata-start
 signal_reason() {
-  stage=$(cat /var/log/gateway-setup-stage 2>/dev/null || echo bootstrap)
-  err=$(tr '\\n' ' ' </var/log/gateway-setup-error 2>/dev/null | cut -c1-120 || true)
-  if test -n "$err"; then printf 'Setup exit %s; stage: %s; error: %s' "$1" "$stage" "$err"
+  stage=$(cat /var/log/gateway-setup-stage 2>/dev/null || echo userdata-start)
+  err=$(tr '\\n' ' ' </var/log/gateway-setup-error 2>/dev/null | cut -c1-100 || true)
+  if test -n "${err:-}"; then printf 'Setup exit %s; stage: %s; error: %s' "$1" "$stage" "$err"
   else printf 'Setup exit %s; stage: %s' "$1" "$stage"; fi
 }
 trap 'rc=$?; /opt/aws/bin/cfn-signal -e "$rc" --reason "$(signal_reason "$rc")" --stack "${AWS::StackName}" --resource "'''+logical+'''" --region "${AWS::Region}" || true' EXIT
+
+phase wait-network
+ok=0
+for attempt in $(seq 1 36); do
+  if curl -fsI --max-time 5 https://aws.amazon.com >/dev/null 2>&1; then ok=1; break; fi
+  if curl -fsI --max-time 5 http://amazon.com >/dev/null 2>&1; then ok=1; break; fi
+  sleep 5
+done
+test "$ok" -eq 1 || fail 'no outbound internet via NAT after 3 minutes'
+
+phase install-cfn-bootstrap
+if ! test -x /opt/aws/bin/cfn-init; then
+  ok=0
+  for attempt in 1 2 3 4 5; do
+    if dnf install -y aws-cfn-bootstrap; then ok=1; break; fi
+    sleep 8
+  done
+  test "$ok" -eq 1 || fail 'dnf could not install aws-cfn-bootstrap'
+fi
+test -x /opt/aws/bin/cfn-init || fail 'cfn-init missing after install'
+test -x /opt/aws/bin/cfn-signal || fail 'cfn-signal missing after install'
+
+phase cfn-init
 install -d -m 750 /etc/gateway
 mkdir -p /opt/gateway/src
-/opt/aws/bin/cfn-init -v --stack "${AWS::StackName}" --resource "'''+logical+'''" --region "${AWS::Region}"
+/opt/aws/bin/cfn-init -v --stack "${AWS::StackName}" --resource "'''+logical+'''" --region "${AWS::Region}" \
+  || fail 'cfn-init failed writing app bundle'
+
+phase write-runtime-config
 cat > /etc/gateway/runtime.json <<'GATEWAY_CONFIG'
 '''+json.dumps(config,indent=2)+'''
 GATEWAY_CONFIG
-python3 -c "import base64,lzma,io,tarfile; data=lzma.decompress(base64.b64decode(open('/opt/gateway/bundle.b64').read())); tarfile.open(fileobj=io.BytesIO(data)).extractall('/opt/gateway/src')"
+test -s /etc/gateway/runtime.json || fail 'runtime.json missing'
+test -s /opt/gateway/bundle.b64 || fail 'bundle.b64 missing from cfn-init'
+
+phase extract-app-bundle
+python3 - <<'PY'
+import base64, lzma, io, tarfile, sys
+from pathlib import Path
+raw = Path('/opt/gateway/bundle.b64').read_text().strip()
+data = lzma.decompress(base64.b64decode(raw))
+with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+    archive.extractall('/opt/gateway/src')
+needed = ['app.py', 'install.sh', 'requirements.txt']
+missing = [n for n in needed if not Path('/opt/gateway/src', n).is_file()]
+if missing:
+    raise SystemExit('missing extracted files: ' + ','.join(missing))
+print('bundle extracted ok')
+PY
+
+phase run-install-sh
 '''
         closing='''
 export GATEWAY_CONFIG=/etc/gateway/runtime.json
