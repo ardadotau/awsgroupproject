@@ -35,11 +35,12 @@ def template(bundle):
     target_group_name={'Fn::Join':['',['gw-',{'Fn::Select':[0,{'Fn::Split':['-',{'Fn::Select':[2,{'Fn::Split':['/',ref('AWS::StackId')]}]}]}]}]]}
     t={
       'AWSTemplateFormatVersion':'2010-09-09',
-      'Description':'INFS3701 Corporate Gateway: private two-AZ Flask, Multi-AZ PostgreSQL, private S3, HTTPS ALB, CloudWatch and SNS email. Run tools/prepare_lab.py for a ready-to-upload template. Reuses existing lab IAM only; no domain required for disclosed self-signed lab HTTPS.',
+      'Description':'INFS3701 Corporate Gateway (lab-reliable): 2 private Flask servers, Multi-AZ PostgreSQL, private S3, HTTPS ALB, CloudWatch, SNS. Single NAT for simpler/cheaper egress. Uses LabInstanceProfile only. prepare_lab.py builds a ready JSON.',
       'Metadata':{'AWS::CloudFormation::Interface':{'ParameterGroups':[
-          {'Label':{'default':'Email and HTTPS certificate (pre-filled when prepared with tools/prepare_lab.py)'},'Parameters':['AlertEmail','CertificateArn']},
-          {'Label':{'default':'Existing Learner Lab access and optional custom domain'},'Parameters':['ExistingInstanceProfile','ExistingRoleArn','ApplicationHostname']},
-          {'Label':{'default':'Sizing and placement'},'Parameters':['ZoneA','ZoneB','InstanceType','DBInstanceClass','DBEngineVersion','AdminUsername','LogRetentionDays']}]}},
+          {'Label':{'default':'1) Required: your alert email'},'Parameters':['AlertEmail']},
+          {'Label':{'default':'2) HTTPS certificate (prepare_lab.py pre-fills a self-signed lab cert)'},'Parameters':['CertificateArn','ApplicationHostname']},
+          {'Label':{'default':'3) Learner Lab IAM (defaults are usually correct)'},'Parameters':['ExistingInstanceProfile','ExistingRoleArn']},
+          {'Label':{'default':'4) Optional sizing (keep defaults unless you know you need otherwise)'},'Parameters':['ZoneA','ZoneB','InstanceType','DBInstanceClass','DBEngineVersion','AdminUsername','LogRetentionDays']}]}},
       'Parameters':{
         'ExistingInstanceProfile':{'Type':'String','Default':'LabInstanceProfile','AllowedPattern':'[A-Za-z0-9+=,.@_-]+','Description':'Existing EC2 instance profile; no IAM resources will be created.'},
         'ExistingRoleArn':{'Type':'String','Default':'','AllowedPattern':'^$|arn:aws:iam::[0-9]{12}:role/.+','Description':'Usually leave blank for the existing /LabRole in this account. This assumes the standard lab role exists; it does not create one. prepare_lab.py verifies the profile and fills its actual role ARN, including any path.'},
@@ -72,30 +73,26 @@ def template(bundle):
     resource('PublicRoutes','AWS::EC2::RouteTable',{'VpcId':ref('GatewayVPC'),'Tags':tag('gateway-public-routes')})
     resource('PublicDefaultRoute','AWS::EC2::Route',{'RouteTableId':ref('PublicRoutes'),'DestinationCidrBlock':'0.0.0.0/0','GatewayId':ref('InternetGateway')},DependsOn='GatewayAttachment')
     resource('DataRoutes','AWS::EC2::RouteTable',{'VpcId':ref('GatewayVPC'),'Tags':tag('gateway-isolated-data-routes')})
+    # One NAT only: cheaper and fewer create failures than dual NAT. App servers
+    # remain in two AZs; egress for packages/APIs goes via PublicSubnetA.
+    # Disclose this egress trade-off in the report (compute/DB are still multi-AZ).
+    resource('NatEipA','AWS::EC2::EIP',{'Domain':'vpc','Tags':tag('gateway-nat-ip-a')},DependsOn='GatewayAttachment')
     for suffix,zone,octet in [('A','ZoneA',1),('B','ZoneB',2)]:
         for tier,offset,public in [('Public',0,True),('App',10,False),('Data',20,False)]:
             name=tier+'Subnet'+suffix
             resource(name,'AWS::EC2::Subnet',{'VpcId':ref('GatewayVPC'),'AvailabilityZone':ref(zone),'CidrBlock':f'10.0.{offset+octet}.0/24','MapPublicIpOnLaunch':public,'Tags':tag('gateway-'+tier.lower()+'-'+suffix.lower())})
-        resource('NatEip'+suffix,'AWS::EC2::EIP',{'Domain':'vpc','Tags':tag('gateway-nat-ip-'+suffix.lower())},DependsOn='GatewayAttachment')
-        resource('NatGateway'+suffix,'AWS::EC2::NatGateway',{'SubnetId':ref('PublicSubnet'+suffix),'AllocationId':att('NatEip'+suffix,'AllocationId'),'Tags':tag('gateway-nat-'+suffix.lower())})
         resource('AppRoutes'+suffix,'AWS::EC2::RouteTable',{'VpcId':ref('GatewayVPC'),'Tags':tag('gateway-app-routes-'+suffix.lower())})
-        resource('AppDefaultRoute'+suffix,'AWS::EC2::Route',{'RouteTableId':ref('AppRoutes'+suffix),'DestinationCidrBlock':'0.0.0.0/0','NatGatewayId':ref('NatGateway'+suffix)})
         for tier,table in [('Public','PublicRoutes'),('App','AppRoutes'+suffix),('Data','DataRoutes')]:
             resource(tier+'RouteAssociation'+suffix,'AWS::EC2::SubnetRouteTableAssociation',{'SubnetId':ref(tier+'Subnet'+suffix),'RouteTableId':ref(table)})
+    resource('NatGatewayA','AWS::EC2::NatGateway',{'SubnetId':ref('PublicSubnetA'),'AllocationId':att('NatEipA','AllocationId'),'Tags':tag('gateway-nat-a')})
+    resource('AppDefaultRouteA','AWS::EC2::Route',{'RouteTableId':ref('AppRoutesA'),'DestinationCidrBlock':'0.0.0.0/0','NatGatewayId':ref('NatGatewayA')})
+    resource('AppDefaultRouteB','AWS::EC2::Route',{'RouteTableId':ref('AppRoutesB'),'DestinationCidrBlock':'0.0.0.0/0','NatGatewayId':ref('NatGatewayA')})
     resource('S3Endpoint','AWS::EC2::VPCEndpoint',{'VpcId':ref('GatewayVPC'),'ServiceName':sub('com.amazonaws.${AWS::Region}.s3'),'VpcEndpointType':'Gateway','RouteTableIds':[ref('AppRoutesA'),ref('AppRoutesB')]})
+    # No custom SecurityGroupEgress: keep AWS default allow-all outbound so DNS,
+    # dnf, pip, Secrets Manager and RDS bootstrap cannot fail on missing ports.
+    # Ingress stays locked to ALB-only HTTPS on 8443.
     resource('AppSecurityGroup','AWS::EC2::SecurityGroup',{
-        'VpcId':ref('GatewayVPC'),'GroupDescription':'Private app: HTTPS from ALB only. Outbound DNS, HTTPS, package HTTP, and database TLS.',
-        'SecurityGroupEgress':[
-            # Custom egress replaces the default allow-all rule, so DNS must be explicit
-            # or package/API name resolution can fail during bootstrap.
-            {'IpProtocol':'udp','FromPort':53,'ToPort':53,'CidrIp':'10.0.0.0/16','Description':'VPC Amazon DNS (UDP)'},
-            {'IpProtocol':'tcp','FromPort':53,'ToPort':53,'CidrIp':'10.0.0.0/16','Description':'VPC Amazon DNS (TCP)'},
-            {'IpProtocol':'udp','FromPort':53,'ToPort':53,'CidrIp':'169.254.169.253/32','Description':'Route 53 Resolver link-local DNS (UDP)'},
-            {'IpProtocol':'tcp','FromPort':53,'ToPort':53,'CidrIp':'169.254.169.253/32','Description':'Route 53 Resolver link-local DNS (TCP)'},
-            {'IpProtocol':'tcp','FromPort':443,'ToPort':443,'CidrIp':'0.0.0.0/0','Description':'AWS APIs, TLS and dependency downloads'},
-            {'IpProtocol':'tcp','FromPort':80,'ToPort':80,'CidrIp':'0.0.0.0/0','Description':'OS repository mirrors during bootstrap'},
-            {'IpProtocol':'tcp','FromPort':5432,'ToPort':5432,'CidrIp':'10.0.21.0/24','Description':'PostgreSQL data subnet A'},
-            {'IpProtocol':'tcp','FromPort':5432,'ToPort':5432,'CidrIp':'10.0.22.0/24','Description':'PostgreSQL data subnet B'}],
+        'VpcId':ref('GatewayVPC'),'GroupDescription':'Private app: HTTPS from ALB only. Default outbound allowed for reliable lab bootstrap.',
         'Tags':tag('gateway-app-sg')})
     resource('AlbSecurityGroup','AWS::EC2::SecurityGroup',{
         'VpcId':ref('GatewayVPC'),'GroupDescription':'Public HTTPS entry and HTTP redirect; targets only on HTTPS.',
@@ -180,7 +177,7 @@ bash /opt/gateway/src/install.sh
             'MetadataOptions':{'HttpTokens':'required','HttpEndpoint':'enabled','HttpPutResponseHopLimit':1},
             'UserData':{'Fn::Base64':{'Fn::Join':['',[{'Fn::Sub':[opening,userdata_vars]},closing]]}},
             'Tags':tag('gateway-app-'+suffix.lower())
-        },DependsOn=['AppDefaultRoute'+suffix,'AppRouteAssociation'+suffix,'S3Endpoint','FilesBucketPolicy','AlbToAppIngress'],CreationPolicy={'ResourceSignal':{'Count':1,'Timeout':'PT25M'}},Metadata={'AWS::CloudFormation::Init':{'config':{'files':{'/opt/gateway/bundle.b64':{'content':{'Fn::FindInMap':['GatewayCode','Bundle','Data']},'mode':'000600','owner':'root','group':'root'}}}}})
+        },DependsOn=['NatGatewayA','AppDefaultRoute'+suffix,'AppRouteAssociation'+suffix,'S3Endpoint','FilesBucketPolicy','AlbToAppIngress'],CreationPolicy={'ResourceSignal':{'Count':1,'Timeout':'PT35M'}},Metadata={'AWS::CloudFormation::Init':{'config':{'files':{'/opt/gateway/bundle.b64':{'content':{'Fn::FindInMap':['GatewayCode','Bundle','Data']},'mode':'000600','owner':'root','group':'root'}}}}})
     # Runtime discovers this target group's ARN from the independently derived
     # target_group_name. The app bootstrap does not refer to the target resource,
     # avoiding the dependency cycle between Targets and app User Data.

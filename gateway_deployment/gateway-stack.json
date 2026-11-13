@@ -1,31 +1,38 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "INFS3701 Corporate Gateway: private two-AZ Flask, Multi-AZ PostgreSQL, private S3, HTTPS ALB, CloudWatch and SNS email. Run tools/prepare_lab.py for a ready-to-upload template. Reuses existing lab IAM only; no domain required for disclosed self-signed lab HTTPS.",
+  "Description": "INFS3701 Corporate Gateway (lab-reliable): 2 private Flask servers, Multi-AZ PostgreSQL, private S3, HTTPS ALB, CloudWatch, SNS. Single NAT for simpler/cheaper egress. Uses LabInstanceProfile only. prepare_lab.py builds a ready JSON.",
   "Metadata": {
     "AWS::CloudFormation::Interface": {
       "ParameterGroups": [
         {
           "Label": {
-            "default": "Email and HTTPS certificate (pre-filled when prepared with tools/prepare_lab.py)"
+            "default": "1) Required: your alert email"
           },
           "Parameters": [
-            "AlertEmail",
-            "CertificateArn"
+            "AlertEmail"
           ]
         },
         {
           "Label": {
-            "default": "Existing Learner Lab access and optional custom domain"
+            "default": "2) HTTPS certificate (prepare_lab.py pre-fills a self-signed lab cert)"
           },
           "Parameters": [
-            "ExistingInstanceProfile",
-            "ExistingRoleArn",
+            "CertificateArn",
             "ApplicationHostname"
           ]
         },
         {
           "Label": {
-            "default": "Sizing and placement"
+            "default": "3) Learner Lab IAM (defaults are usually correct)"
+          },
+          "Parameters": [
+            "ExistingInstanceProfile",
+            "ExistingRoleArn"
+          ]
+        },
+        {
+          "Label": {
+            "default": "4) Optional sizing (keep defaults unless you know you need otherwise)"
           },
           "Parameters": [
             "ZoneA",
@@ -293,6 +300,23 @@
         ]
       }
     },
+    "NatEipA": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-ip-a"
+          }
+        ]
+      },
+      "DependsOn": "GatewayAttachment"
+    },
     "PublicSubnetA": {
       "Type": "AWS::EC2::Subnet",
       "Properties": {
@@ -362,47 +386,6 @@
         ]
       }
     },
-    "NatEipA": {
-      "Type": "AWS::EC2::EIP",
-      "Properties": {
-        "Domain": "vpc",
-        "Tags": [
-          {
-            "Key": "Project",
-            "Value": "INFS3701-Corporate-Gateway"
-          },
-          {
-            "Key": "Name",
-            "Value": "gateway-nat-ip-a"
-          }
-        ]
-      },
-      "DependsOn": "GatewayAttachment"
-    },
-    "NatGatewayA": {
-      "Type": "AWS::EC2::NatGateway",
-      "Properties": {
-        "SubnetId": {
-          "Ref": "PublicSubnetA"
-        },
-        "AllocationId": {
-          "Fn::GetAtt": [
-            "NatEipA",
-            "AllocationId"
-          ]
-        },
-        "Tags": [
-          {
-            "Key": "Project",
-            "Value": "INFS3701-Corporate-Gateway"
-          },
-          {
-            "Key": "Name",
-            "Value": "gateway-nat-a"
-          }
-        ]
-      }
-    },
     "AppRoutesA": {
       "Type": "AWS::EC2::RouteTable",
       "Properties": {
@@ -419,18 +402,6 @@
             "Value": "gateway-app-routes-a"
           }
         ]
-      }
-    },
-    "AppDefaultRouteA": {
-      "Type": "AWS::EC2::Route",
-      "Properties": {
-        "RouteTableId": {
-          "Ref": "AppRoutesA"
-        },
-        "DestinationCidrBlock": "0.0.0.0/0",
-        "NatGatewayId": {
-          "Ref": "NatGatewayA"
-        }
       }
     },
     "PublicRouteAssociationA": {
@@ -535,47 +506,6 @@
         ]
       }
     },
-    "NatEipB": {
-      "Type": "AWS::EC2::EIP",
-      "Properties": {
-        "Domain": "vpc",
-        "Tags": [
-          {
-            "Key": "Project",
-            "Value": "INFS3701-Corporate-Gateway"
-          },
-          {
-            "Key": "Name",
-            "Value": "gateway-nat-ip-b"
-          }
-        ]
-      },
-      "DependsOn": "GatewayAttachment"
-    },
-    "NatGatewayB": {
-      "Type": "AWS::EC2::NatGateway",
-      "Properties": {
-        "SubnetId": {
-          "Ref": "PublicSubnetB"
-        },
-        "AllocationId": {
-          "Fn::GetAtt": [
-            "NatEipB",
-            "AllocationId"
-          ]
-        },
-        "Tags": [
-          {
-            "Key": "Project",
-            "Value": "INFS3701-Corporate-Gateway"
-          },
-          {
-            "Key": "Name",
-            "Value": "gateway-nat-b"
-          }
-        ]
-      }
-    },
     "AppRoutesB": {
       "Type": "AWS::EC2::RouteTable",
       "Properties": {
@@ -592,18 +522,6 @@
             "Value": "gateway-app-routes-b"
           }
         ]
-      }
-    },
-    "AppDefaultRouteB": {
-      "Type": "AWS::EC2::Route",
-      "Properties": {
-        "RouteTableId": {
-          "Ref": "AppRoutesB"
-        },
-        "DestinationCidrBlock": "0.0.0.0/0",
-        "NatGatewayId": {
-          "Ref": "NatGatewayB"
-        }
       }
     },
     "PublicRouteAssociationB": {
@@ -639,6 +557,54 @@
         }
       }
     },
+    "NatGatewayA": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetA"
+        },
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NatEipA",
+            "AllocationId"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-a"
+          }
+        ]
+      }
+    },
+    "AppDefaultRouteA": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesA"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayA"
+        }
+      }
+    },
+    "AppDefaultRouteB": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesB"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayA"
+        }
+      }
+    },
     "S3Endpoint": {
       "Type": "AWS::EC2::VPCEndpoint",
       "Properties": {
@@ -665,65 +631,7 @@
         "VpcId": {
           "Ref": "GatewayVPC"
         },
-        "GroupDescription": "Private app: HTTPS from ALB only. Outbound DNS, HTTPS, package HTTP, and database TLS.",
-        "SecurityGroupEgress": [
-          {
-            "IpProtocol": "udp",
-            "FromPort": 53,
-            "ToPort": 53,
-            "CidrIp": "10.0.0.0/16",
-            "Description": "VPC Amazon DNS (UDP)"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 53,
-            "ToPort": 53,
-            "CidrIp": "10.0.0.0/16",
-            "Description": "VPC Amazon DNS (TCP)"
-          },
-          {
-            "IpProtocol": "udp",
-            "FromPort": 53,
-            "ToPort": 53,
-            "CidrIp": "169.254.169.253/32",
-            "Description": "Route 53 Resolver link-local DNS (UDP)"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 53,
-            "ToPort": 53,
-            "CidrIp": "169.254.169.253/32",
-            "Description": "Route 53 Resolver link-local DNS (TCP)"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 443,
-            "ToPort": 443,
-            "CidrIp": "0.0.0.0/0",
-            "Description": "AWS APIs, TLS and dependency downloads"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 80,
-            "ToPort": 80,
-            "CidrIp": "0.0.0.0/0",
-            "Description": "OS repository mirrors during bootstrap"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 5432,
-            "ToPort": 5432,
-            "CidrIp": "10.0.21.0/24",
-            "Description": "PostgreSQL data subnet A"
-          },
-          {
-            "IpProtocol": "tcp",
-            "FromPort": 5432,
-            "ToPort": 5432,
-            "CidrIp": "10.0.22.0/24",
-            "Description": "PostgreSQL data subnet B"
-          }
-        ],
+        "GroupDescription": "Private app: HTTPS from ALB only. Default outbound allowed for reliable lab bootstrap.",
         "Tags": [
           {
             "Key": "Project",
@@ -1489,6 +1397,7 @@
         ]
       },
       "DependsOn": [
+        "NatGatewayA",
         "AppDefaultRouteA",
         "AppRouteAssociationA",
         "S3Endpoint",
@@ -1498,7 +1407,7 @@
       "CreationPolicy": {
         "ResourceSignal": {
           "Count": 1,
-          "Timeout": "PT25M"
+          "Timeout": "PT35M"
         }
       },
       "Metadata": {
@@ -1635,6 +1544,7 @@
         ]
       },
       "DependsOn": [
+        "NatGatewayA",
         "AppDefaultRouteB",
         "AppRouteAssociationB",
         "S3Endpoint",
@@ -1644,7 +1554,7 @@
       "CreationPolicy": {
         "ResourceSignal": {
           "Count": 1,
-          "Timeout": "PT25M"
+          "Timeout": "PT35M"
         }
       },
       "Metadata": {

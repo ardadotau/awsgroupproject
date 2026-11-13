@@ -1,224 +1,78 @@
-SIMPLER CORPORATE GATEWAY INSTALLATION
+CORPORATE GATEWAY — SIMPLE RELIABLE LAB DEPLOY (us-east-1)
 
-Use the NEW ZIP and a new setup folder. Do not reuse yesterday's generated
-ready JSON: it contains the old embedded installer.
+What this keeps (assignment requirements)
+- Real Flask portal: login, upload, SHA-256, download, operator panel
+- 2 private app servers in 2 AZs behind one HTTPS ALB
+- Multi-AZ RDS PostgreSQL + private encrypted S3
+- CloudWatch dashboard + HealthyHostCount alarm + SNS email
+- Uses existing LabInstanceProfile / LabRole (creates NO IAM roles)
 
-1. Check yesterday's stack cleanup before launching another stack. Delete only
-   your project's leftover resources. The versioned S3 bucket may be retained.
-2. Start Learner Lab and open AWS in us-east-1 (N. Virginia).
-3. Open CloudShell and upload Corporate_Gateway_Quick_Install.zip using Actions.
-4. Run:
+What we simplified (so deploy is less likely to fail / cheaper)
+- ONE NAT gateway (both app AZs egress via AZ-A). Disclose this in the report.
+- Default outbound on app SG (ingress still ALB-only). More reliable bootstrap.
+- Longer app install timeout (35 min) + clearer failure stages.
 
-   mkdir -p gateway-simple
-   unzip -q Corporate_Gateway_Quick_Install.zip -d gateway-simple
-   cd gateway-simple/gateway_deployment
-   python3 tools/prepare_lab.py
+--------------------------------------------------------------------------------
+FILES YOU ACTUALLY USE
+  tools/prepare_lab.py          <- run in CloudShell (builds ready JSON)
+  tools/make_lab_certificate.sh <- called by prepare_lab (self-signed ACM)
+  gateway-stack.json            <- source template (do not upload raw unless prepared)
+  tools/probe.py                <- optional CSV during failure test
+  CHECKLIST.txt                 <- screenshots / video evidence list
+  src/                          <- app source (already embedded in the JSON)
 
-5. Download gateway-stack-ready.json using Actions > Download file and the full
-   path printed by the helper. Upload that JSON in CloudFormation > Create stack.
-6. Enter your AlertEmail. Keep the prefilled role/profile/certificate defaults.
-   Leave ApplicationHostname blank. Leave the optional CloudFormation service
-   role blank on the later Permissions page. Keep normal rollback enabled.
-7. Wait for the WHOLE STACK to show CREATE_COMPLETE. Outputs > ApplicationURL
-   opens the portal. Outputs > ApplicationSecretArn identifies the portal login
-   secret in Secrets Manager. Retrieve its username/password privately.
-8. Confirm the SNS subscription email before testing the alarm.
+You do NOT need the other docs for deploy.
 
-No domain purchase or new IAM role is required for the self-signed lab route.
-The test certificate causes browser warnings; use dummy files and disclose this
-limitation. Trusted public HTTPS still requires a matching trusted certificate.
-If CloudShell, existing-profile reads or ACM import are denied, keep the exact
-error; do not modify LabRole or substitute personal AWS credentials.
+--------------------------------------------------------------------------------
+BEFORE YOU START
+1. Wait until any old stack is ROLLBACK_COMPLETE or DELETE_COMPLETE.
+2. Check lab credits. Delete leftover NAT/ALB/RDS from failed runs if yours.
+3. Have an email inbox ready for SNS Confirm subscription.
 
-WHAT WAS SIMPLIFIED
-The serving tier now has one application service per server, directly serving
-HTTPS on private port 8443. Nginx and the CloudWatch log-agent installation have
-been removed. ALB/RDS/EC2 service metrics, the dashboard, alarms and SNS remain.
-Two private app servers, two AZs, S3 and Multi-AZ PostgreSQL are retained because
-these are part of the required architecture. Application source is inside JSON.
-Local app logs remain on each server; they are not shipped to CloudWatch Logs.
+--------------------------------------------------------------------------------
+DEPLOY (CloudShell, us-east-1)
 
-IF AN INSTANCE FAILS
-"Received FAILURE signal with UniqueId i-..." means bootstrap ran and exited
-non-zero. That UniqueId alone is not the root cause. In CloudFormation ->
-Events, open the AppServerA/AppServerB CREATE_FAILED row and copy the FULL
-Status reason. It should look like:
+  mkdir -p gateway-lab && cd gateway-lab
+  # upload + unzip this package here, then:
+  cd gateway_deployment   # or the folder that contains START_HERE.txt
+  python3 tools/prepare_lab.py --output gateway-stack-ready.json
 
-   Setup exit 1; stage: Initializing shared PostgreSQL database; error: ...
+Download gateway-stack-ready.json (Actions > Download file).
 
-Map the stage:
-- bootstrap / Installing Python...     : dnf/NAT/DNS or aws-cfn-bootstrap
-- Installing application dependencies  : pip/PyPI via NAT
-- Downloading RDS CA bundle            : outbound HTTPS to AWS truststore
-- Initializing shared PostgreSQL...    : Secrets Manager, RDS TLS, SG, DB ready
-- Starting HTTPS... / Checking...      : gunicorn/health; journalctl -u gateway
+CloudFormation > Create stack > Upload the ready JSON.
 
-Also note whether the OTHER app server is CREATE_COMPLETE or also failed.
-If the instance is still available (before rollback finishes), Session Manager:
+PARAMETERS — what you choose
+  AlertEmail              YOUR email (required). Confirm SNS later.
+  CertificateArn          Leave the prefilled self-signed cert from prepare_lab.
+  ApplicationHostname     LEAVE BLANK (browser warning is expected — disclose it).
+  ExistingInstanceProfile Leave LabInstanceProfile
+  ExistingRoleArn         Leave the ARN prepare_lab filled (or blank = /LabRole)
+  ZoneA / ZoneB           us-east-1a + us-east-1b (or any two different zones)
+  InstanceType            t3.micro (default) — keep it
+  DBInstanceClass         db.t3.micro (default) — keep it
+  DBEngineVersion         16 (default) — keep it
+  AdminUsername           admin (or change)
+  LogRetentionDays        1 (default)
 
-   sudo cat /var/log/gateway-setup-stage
-   sudo cat /var/log/gateway-setup-error
-   sudo tail -n 200 /var/log/gateway-setup-detail
-   sudo tail -n 100 /var/log/cloud-init-output.log
-   sudo journalctl -u gateway -n 60 --no-pager
+Permissions page: leave CloudFormation service role BLANK.
+Keep rollback enabled. Wait for WHOLE stack CREATE_COMPLETE (can take ~20–35 min).
 
-Do not share credentials or secret values. If rollback already removed the
-instance, preserve the CloudFormation event reason; local logs may be gone.
-Wait for ROLLBACK_COMPLETE, clean leftovers, then redeploy. No package can
-override a denied lab service permission or guarantee capacity.
+--------------------------------------------------------------------------------
+AFTER CREATE_COMPLETE
+1. Outputs > ApplicationSecretArn > Secrets Manager > Retrieve secret (login).
+2. Confirm SNS email.
+3. Open ApplicationURL (accept cert warning for self-signed lab cert).
+4. Upload a dummy file; check both targets Healthy; open CloudWatchDashboardURL.
+5. Failure test: stop ONE app instance OR use operator panel temporary failure.
+6. Capture CHECKLIST.txt evidence + 2:30 video WHILE stack is up.
+7. Delete the stack. Empty+delete the retained S3 bucket (all versions).
 
-REPORT CHANGES
-Describe ALB to Flask HTTPS on port 8443, with no Nginx layer. CloudWatch uses
-AWS service metrics; application logs are local. Do not claim centrally shipped
-application logs. The existing broad lab role and self-signed certificate
-limitations remain. Collect real AWS results before making success claims.
+--------------------------------------------------------------------------------
+IF AN APP SERVER FAILS AGAIN
+Events → full Status reason (look for "stage: ...").
+SSM on the instance if it still exists:
+  sudo cat /var/log/gateway-setup-stage
+  sudo cat /var/log/gateway-setup-error
+  sudo tail -n 200 /var/log/gateway-setup-detail
 
-DETAILED OPERATION AND CLEANUP
-
-4. CONFIRM EMAIL AND GET THE GENERATED LOGIN
-1) Open the AlertEmail inbox and locate the Amazon SNS subscription message.
-2) Click Confirm subscription. Until confirmed, alarm emails are not delivered.
-3) In CloudFormation -> Outputs, copy ApplicationSecretArn.
-4) Open that secret in Secrets Manager -> Retrieve secret value. The secret
-   contains the administrator username and generated password. Keep it private.
-5) Open ApplicationURL and log in. The portal may initially need a short warm-up.
-6) Check EC2 -> Target groups -> Targets: both app instances should be Healthy.
-7) Open CloudWatchDashboardURL and allow a few minutes for metrics to appear.
-
-Useful outputs:
-ApplicationURL / LoadBalancerDNS   Web entry point; hostname must match a trusted
-                                  certificate for a warning-free experience.
-CloudWatchDashboardURL            AWS monitoring dashboard.
-AppServerA / AppServerB             EC2 instance identifiers for safe tests/SSM.
-BucketName                         Private upload bucket.
-DatabaseIdentifier / Endpoint      RDS instance and shared DNS endpoint.
-ApplicationSecretArn               Generated web login; never include its value
-                                  in the submission/screenshots.
-DatabaseAppSecretArn               Restricted application database credentials.
-AlertTopicArn                      SNS topic; confirm subscription in SNS.
-HealthyTargetsAlarmName            Main availability alarm.
-
-5. VERIFY THE APPLICATION BEFORE FAILURE TESTING
-1) Log in, select a department and upload a small dummy document.
-2) Check that its name, department, timestamp and checksum appear in the record
-   list and that an authenticated download works.
-3) Check S3 for the stored object. Use PostgreSQL/application evidence to verify
-   the matching record. Do not expose secrets in screenshots.
-4) Refresh/use the portal repeatedly and observe server identifiers. Both servers
-   must see the same upload records and session; no sticky session is required.
-5) Open the operator panel. It shows service checks, target/alarm information and
-   the dashboard link. Restricted AWS read permissions may show an honest
-   unavailable warning; that is not proof the service is healthy.
-6) Save screenshots of the interface, two healthy targets and the dashboard.
-
-6. TEST THE EMAIL ALARM SAFELY
-The main alarm is HealthyHostCount, Minimum, below 2 for TWO consecutive 60-second
-periods. Missing data is treated as breaching, so verify a healthy OK baseline
-before the deliberate test. Allow for health-check, metric and email delays.
-
-Before testing: both targets Healthy, alarm OK, SNS subscription Confirmed and a
-second app server operating normally. Never disable both servers together.
-
-Start a request log on your computer using the standard-library-only probe:
-
-  python tools/probe.py https://YOUR_HOSTNAME --duration 600 --interval 1
-
-Only for the self-signed lab certificate, explicitly add --insecure. This disables
-certificate validation for this probe only and must not be used as a production
-workaround. The probe creates a new timestamped CSV and prints a request summary.
-
-Choose one test method:
-A) EC2 console: STOP exactly ONE app instance, not terminate. Keep making requests.
-   Wait for target-health change, CloudWatch ALARM and the received email. START
-   that same instance again. Wait for both Healthy and alarm OK/recovery email.
-B) Operator panel: use the temporary failure test if available. It deliberately
-   makes the CURRENT app server's health check fail for about four minutes and
-   recovers automatically. Follow its safety guard and confirmation. The second
-   app server should continue serving the portal. A reset routed to the other
-   server cannot reset the first one; automatic expiry is the reliable recovery.
-
-Take timestamped screenshots BEFORE, DURING and AFTER. Save the actual received
-SNS alarm email, not just the configured email subscription. Record failed
-requests and recovery time from the CSV. A one-instance test is not proof that
-an entire Availability Zone was lost, and zero failed requests is not promised.
-
-Optional separate database test: use the RDS console's reboot with failover only
-after saving data and confirming Multi-AZ is Available. Record reconnection and
-any brief interruption. Do not combine it with the first instance/email test.
-
-7. COLLECT THE SUBMISSION EVIDENCE
-See REQUIREMENTS_AND_EVIDENCE.txt for the checklist and required report limits.
-Record the 2-minute-30-second video while the deployed stack is running. Show the
-actual working application and an availability/scalability demonstration; console
-screenshots or slides alone do not replace the live interface.
-
-8. TROUBLESHOOTING
-- CREATE_FAILED: read the FIRST relevant failure in CloudFormation Events.
-- App signal timeout: EC2 -> Connect -> Session Manager, using the app instance
-  output. Verify profile permissions, SSM Agent and outbound NAT connectivity.
-- Installer logs: /var/log/cloud-init-output.log.
-- App logs: /var/log/gateway/ and systemctl status gateway; use
-  sudo journalctl -u gateway -n 100 --no-pager.
-- Config: /etc/gateway/runtime.json contains resource identifiers, not passwords.
-- Private app servers need outbound access for packages/AWS APIs. Data subnets
-  do not need internet routes. Security groups must allow the intended path.
-- RDS failures: check endpoint, availability, secret access, app-sg -> db-sg TCP
-  5432 and TLS CA setup. Do not make the database public as a shortcut.
-- No email: confirm SNS, spam folder, topic/region and an actual alarm transition.
-  Creating a subscription after an event does not retroactively deliver it.
-- Certificate warning: validate the domain/certificate or document the lab-only
-  self-signed route; HTTP is not a substitute for the encryption requirement.
-- Blank metrics: wait for metrics, generate requests and check region/dimensions.
-
-9. COSTS AND CLEANUP
-NAT gateways, Elastic IP/public IPv4 usage, ALB, EC2, EBS, Multi-AZ RDS, Secrets
-Manager, S3 requests/storage, CloudWatch dashboards/alarms/logs and SNS can incur
-charges. Use AWS Pricing Calculator for actual 12-month assumptions. A gateway
-endpoint for S3 has no hourly endpoint charge; usage/storage charges still apply.
-Ending the lab does NOT mean these resources are deleted. Do not leave the stack
-running unattended just because the lab session is closed.
-
-Before teardown, export evidence, logs, files/records you need and the video.
-The training template deletes RDS WITHOUT a final snapshot when the stack is
-deleted: database records and sessions are lost. Export anything needed first.
-Delete the CloudFormation stack and watch its deletion Events.
-
-The S3 bucket is deliberately RETAINED to avoid deleting uploaded documents or
-failing deletion merely because the bucket is not empty. After stack deletion,
-empty the retained bucket (including ALL object versions/delete markers), then
-delete the bucket if no longer needed. Retained data continues to incur charges.
-Check for leftover snapshots/backups, secrets, NAT gateways, Elastic IPs, logs,
-dashboards, alarms and SNS resources; resolve any DELETE_FAILED resources.
-CloudWatch log retention defaults to one day (LogRetentionDays); log groups are
-deleted with the stack. Delete the separately imported ACM certificate only
-after the load balancer no longer uses it.
-
-Keep the final report accurate: a proposed feature, local test or template line
-is not evidence of a successful AWS deployment.
-
-PACKAGE CONTENTS AND LOCAL CHECKS
-- gateway-stack.json: upload this to CloudFormation; source is embedded.
-- src/: readable Flask, HTML, CSS, JavaScript and installer source.
-- build_template.py: rebuilds JSON after source changes (Python 3.11+ recommended).
-- Corporate_Gateway_With_Alerts.drawio: simple editable diagram with SNS/email.
-- tools/: certificate setup, read-only preflight and availability CSV probe.
-- tools/prepare_lab.py: discovers existing role and pre-fills a ready JSON with
-  a lab certificate; no new role, domain purchase or stack deployment.
-- tests/: local application tests (run python -m pytest -q tests with pytest).
-- VERIFICATION.txt: exact scope of passed checks and outstanding AWS tests.
-- PRODUCTION_IAM_EXAMPLE.json: an UNAPPLIED illustrative runtime policy.
-
-The IAM example contains replacement values. Do not attach it to or edit the
-shared LabRole. Runtime monitoring APIs that lack fine-grained permissions may
-need wildcard read access. A production deployment would also need separately
-scoped bootstrap/SSM/log-agent permissions; master-secret access is for schema
-setup, not a permanent application privilege.
-
-The interface has been checked through template/API tests and a static layout
-render. A full JavaScript browser test and a live PostgreSQL/AWS integration test
-remain required in your lab. No AWS deployment success or email delivery is
-claimed by these local checks.
-
-See CREDIT_GUIDE.txt before deploying if your remaining lab balance is low.
-The main cost control is one short live testing/video session, followed by full
-stack deletion. Never assume stopping only the app instances stops NAT/ALB costs.
+Do not start another stack until rollback finishes.

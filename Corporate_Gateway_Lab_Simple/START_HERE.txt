@@ -1,0 +1,78 @@
+CORPORATE GATEWAY — SIMPLE RELIABLE LAB DEPLOY (us-east-1)
+
+What this keeps (assignment requirements)
+- Real Flask portal: login, upload, SHA-256, download, operator panel
+- 2 private app servers in 2 AZs behind one HTTPS ALB
+- Multi-AZ RDS PostgreSQL + private encrypted S3
+- CloudWatch dashboard + HealthyHostCount alarm + SNS email
+- Uses existing LabInstanceProfile / LabRole (creates NO IAM roles)
+
+What we simplified (so deploy is less likely to fail / cheaper)
+- ONE NAT gateway (both app AZs egress via AZ-A). Disclose this in the report.
+- Default outbound on app SG (ingress still ALB-only). More reliable bootstrap.
+- Longer app install timeout (35 min) + clearer failure stages.
+
+--------------------------------------------------------------------------------
+FILES YOU ACTUALLY USE
+  tools/prepare_lab.py          <- run in CloudShell (builds ready JSON)
+  tools/make_lab_certificate.sh <- called by prepare_lab (self-signed ACM)
+  gateway-stack.json            <- source template (do not upload raw unless prepared)
+  tools/probe.py                <- optional CSV during failure test
+  CHECKLIST.txt                 <- screenshots / video evidence list
+  src/                          <- app source (already embedded in the JSON)
+
+You do NOT need the other docs for deploy.
+
+--------------------------------------------------------------------------------
+BEFORE YOU START
+1. Wait until any old stack is ROLLBACK_COMPLETE or DELETE_COMPLETE.
+2. Check lab credits. Delete leftover NAT/ALB/RDS from failed runs if yours.
+3. Have an email inbox ready for SNS Confirm subscription.
+
+--------------------------------------------------------------------------------
+DEPLOY (CloudShell, us-east-1)
+
+  mkdir -p gateway-lab && cd gateway-lab
+  # upload + unzip this package here, then:
+  cd gateway_deployment   # or the folder that contains START_HERE.txt
+  python3 tools/prepare_lab.py --output gateway-stack-ready.json
+
+Download gateway-stack-ready.json (Actions > Download file).
+
+CloudFormation > Create stack > Upload the ready JSON.
+
+PARAMETERS — what you choose
+  AlertEmail              YOUR email (required). Confirm SNS later.
+  CertificateArn          Leave the prefilled self-signed cert from prepare_lab.
+  ApplicationHostname     LEAVE BLANK (browser warning is expected — disclose it).
+  ExistingInstanceProfile Leave LabInstanceProfile
+  ExistingRoleArn         Leave the ARN prepare_lab filled (or blank = /LabRole)
+  ZoneA / ZoneB           us-east-1a + us-east-1b (or any two different zones)
+  InstanceType            t3.micro (default) — keep it
+  DBInstanceClass         db.t3.micro (default) — keep it
+  DBEngineVersion         16 (default) — keep it
+  AdminUsername           admin (or change)
+  LogRetentionDays        1 (default)
+
+Permissions page: leave CloudFormation service role BLANK.
+Keep rollback enabled. Wait for WHOLE stack CREATE_COMPLETE (can take ~20–35 min).
+
+--------------------------------------------------------------------------------
+AFTER CREATE_COMPLETE
+1. Outputs > ApplicationSecretArn > Secrets Manager > Retrieve secret (login).
+2. Confirm SNS email.
+3. Open ApplicationURL (accept cert warning for self-signed lab cert).
+4. Upload a dummy file; check both targets Healthy; open CloudWatchDashboardURL.
+5. Failure test: stop ONE app instance OR use operator panel temporary failure.
+6. Capture CHECKLIST.txt evidence + 2:30 video WHILE stack is up.
+7. Delete the stack. Empty+delete the retained S3 bucket (all versions).
+
+--------------------------------------------------------------------------------
+IF AN APP SERVER FAILS AGAIN
+Events → full Status reason (look for "stage: ...").
+SSM on the instance if it still exists:
+  sudo cat /var/log/gateway-setup-stage
+  sudo cat /var/log/gateway-setup-error
+  sudo tail -n 200 /var/log/gateway-setup-detail
+
+Do not start another stack until rollback finishes.
