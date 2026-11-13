@@ -28,6 +28,8 @@ BEFORE YOU START
 1. Wait until any old stack is ROLLBACK_COMPLETE or DELETE_COMPLETE.
 2. Check lab credits. Delete leftover NAT/ALB/RDS from failed runs if yours.
 3. Have an email inbox ready for SNS Confirm subscription.
+4. ALWAYS re-run prepare_lab.py after downloading a NEW zip. Never reuse an
+   old gateway-stack-ready.json from a previous attempt.
 
 --------------------------------------------------------------------------------
 DEPLOY (CloudShell, us-east-1)
