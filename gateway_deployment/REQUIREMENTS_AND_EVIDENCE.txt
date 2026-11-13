@@ -1,0 +1,142 @@
+INFS3701 CORPORATE GATEWAY - REQUIREMENTS AND EVIDENCE
+
+Source: group assignment brief, Arda Idrisoglu's individual report and the user's
+Week 9 monitoring instructions. These are deployment targets, NOT AWS test results.
+For every row, record the responsible member, date, screenshot/log reference and
+actual outcome. Report failures/limitations honestly.
+
+Requirement                    Package coverage / AWS evidence still required
+-----------------------------  ------------------------------------------------
+Option A, original service     Corporate Cloud Storage Gateway based on Arda's
+                               Flask upload/SHA-256/S3 application. Identify the
+                               original assignment and group changes in report.
+
+Usable server-side interface   Login, uploads, record search/download, operator
+                               panel. Evidence: live login/upload/download and
+                               saved record. Client-side login alone is not enough.
+
+At least two compute targets   Private app instance in each of two AZs, one ALB.
+                               Evidence: both targets Healthy and responses from
+                               both actual server identifiers.
+
+Stateless scale-out            Same app, S3 files, PostgreSQL metadata/sessions.
+                               Evidence: record and login persist when requests
+                               reach either instance. Manual scale-out capable;
+                               do not claim Auto Scaling is included.
+
+Two-AZ high availability       Network/app tiers across zones; RDS Multi-AZ.
+                               Evidence: console AZ placement, instance failure
+                               test with time/request log and continued operation.
+                               Do not call stopping one server a full AZ outage.
+
+Resilient managed database     RDS PostgreSQL primary and standby, private subnet
+                               group covering both data subnets. Evidence: RDS
+                               Multi-AZ configuration and shared record; optional
+                               separately recorded database failover test.
+
+Private/persistent documents   S3 private bucket, encryption, HTTPS policy and
+                               scoped application object access. Evidence: object,
+                               encryption and public-access settings. S3 alone
+                               does not satisfy the managed database requirement.
+
+Networking                    VPC/subnets/IGW/NAT/routing/security groups. Evidence:
+                               two-zone layout, private EC2/RDS, public ALB and
+                               allowed SG-to-SG paths. No public SSH/DB shortcut.
+
+Encryption                    TLS client->ALB->app and app->PostgreSQL; encrypted
+                               volumes/storage. Evidence: listener/target config,
+                               actual HTTPS/TLS and storage settings. Disclose a
+                               self-signed lab certificate or hostname mismatch;
+                               do not call it browser-trusted production HTTPS.
+
+IAM/credentials               Existing LabInstanceProfile/LabRole; generated
+                               secrets; no static AWS keys. Evidence: instance
+                               profile, policy settings and code configuration
+                               with SECRET VALUES HIDDEN. The shared lab role may
+                               remain broader than least privilege. Discuss that
+                               limit and the proposed production-scoped policy.
+
+CloudWatch dashboard           Healthy/UnHealthyHostCount, requests, target and
+                               ELB 5xx errors, response-time p95, EC2 CPU and RDS
+                               CPU/connections/free storage. Evidence: real data,
+                               chosen time range/periods and a short explanation.
+
+Relevant alarm                HealthyHostCount Minimum <2 for 2/2 x 60-second
+                               periods; missing data breaching. Evidence: alarm
+                               configuration, OK baseline, ALARM state/history,
+                               recovery and timestamps. Explain why this matters.
+
+SNS email notification        Topic and email subscription are created by stack.
+                               Recipient MUST confirm email. Evidence: Confirmed
+                               subscription and actual alarm email received.
+                               An unconfirmed subscription is not a working alert.
+
+Safe intentional test         Stop one app instance then restart, or use the
+                               guarded temporary health-failure panel feature.
+                               Evidence: before/during/after targets, requests CSV,
+                               app operation, alarm email and recovery. Count any
+                               failed requests rather than claiming zero blindly.
+
+Operational status panel      Shows actual checks/AWS reads where permitted.
+                               Evidence: panel and dashboard link. Clearly report
+                               unavailable permissions; no fake green statuses.
+
+Higher-band extensions        Core first. Auto Scaling with a tested policy, OR
+                               three justified/demonstrated extra topics per brief.
+                               Do not count unimplemented ideas as enhancements.
+                               Secrets/identity/failure evidence must actually be
+                               demonstrated and tied to business needs.
+
+Cost/budget control            Small instances, short tests, capture then tear down.
+                               Evidence: real calculator assumptions and cleanup.
+                               Include NAT2, ALB, EC2/EBS, Multi-AZ RDS, S3,
+                               IPv4, Secrets, CloudWatch and notification usage.
+
+MINIMUM SCREENSHOT/LOG SET
+01 Working portal and successful dummy upload (no password visible).
+02 S3 object/encryption/private settings and corresponding DB record.
+03 Two healthy targets, instance IDs and distinct AZs.
+04 Shared records served by both instances; login/session continuity.
+05 Dashboard with real metrics and clearly visible time range.
+06 Main alarm configuration and healthy OK baseline.
+07 Confirmed SNS email subscription.
+08 Intentional failure: one target unhealthy/stopped, remaining service usable.
+09 ALARM state/history and actual email with timestamp.
+10 Request CSV: total requests, failures, serving instances and timing.
+11 Recovery: two healthy targets and OK state/email.
+12 Optional RDS failover or tested extra features, only if actually attempted.
+13 AI prompts, dated code/design versions and contribution record.
+
+SUBMISSION CHECKLIST - DUE TUESDAY 17 NOVEMBER 2026, 4:00 PM SYDNEY
+- Design PDF: UNDER 4,000 words AND UNDER 8 pages; references/appendices excluded.
+  Aim for a readable seven-page main report. Explain objective/Option A,
+  architecture, scalability, availability, network/security/data, monitoring,
+  cost, actual tests/results, limitations and any demonstrated extras.
+- Separate architecture PDF: UNDER 2 pages; one readable page is suitable.
+  Match the actual deployment; a simplified diagram may omit detailed egress
+  but the deployed routing must still exist.
+- Separate 12-month cost PDF: UNDER 2 pages, based on AWS Pricing Calculator,
+  us-east-1, clear usage assumptions. Do not reuse the single-server estimate.
+- 2-minute-30-second video: live deployed UI and availability/scalability demo,
+  plus clear reasons for key architecture decisions. Record before teardown.
+- Application and deployment source/code, group cover sheet and each member's
+  independently signed contribution statement as required by the brief.
+- Use one referencing style consistently. Keep essential reasoning/results in
+  the main report; appendices hold supporting detail, not the entire analysis.
+
+NAMES AND CLAIMS
+Use 'Flask' and 'RDS PostgreSQL' in the simple architecture diagram. The service
+processes file uploads and SHA-256 integrity checks. Editable database records
+and JSON manifests do not, by themselves, create an immutable audit chain.
+
+VERIFICATION RECORD
+AWS stack deployment:                 Pending group execution
+Actual upload/download test:          Pending group execution
+Two-target/shared-session proof:      Pending group execution
+Alarm/email test and screenshots:     Pending group execution
+Instance failure/recovery timing:     Pending group execution
+RDS failover, if attempted:           Pending group execution
+Pricing Calculator estimate:          Pending group execution
+Pitch video and final submission:     Pending group execution
+
+Replace these 'Pending' entries only after the group has collected the evidence.

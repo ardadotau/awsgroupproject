@@ -1,0 +1,1901 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "INFS3701 Corporate Gateway: private two-AZ Flask, Multi-AZ PostgreSQL, private S3, HTTPS ALB, CloudWatch and SNS email. Run tools/prepare_lab.py for a ready-to-upload template. Reuses existing lab IAM only; no domain required for disclosed self-signed lab HTTPS.",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Email and HTTPS certificate (pre-filled when prepared with tools/prepare_lab.py)"
+          },
+          "Parameters": [
+            "AlertEmail",
+            "CertificateArn"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Existing Learner Lab access and optional custom domain"
+          },
+          "Parameters": [
+            "ExistingInstanceProfile",
+            "ExistingRoleArn",
+            "ApplicationHostname"
+          ]
+        },
+        {
+          "Label": {
+            "default": "Sizing and placement"
+          },
+          "Parameters": [
+            "ZoneA",
+            "ZoneB",
+            "InstanceType",
+            "DBInstanceClass",
+            "DBEngineVersion",
+            "AdminUsername",
+            "LogRetentionDays"
+          ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "ExistingInstanceProfile": {
+      "Type": "String",
+      "Default": "LabInstanceProfile",
+      "AllowedPattern": "[A-Za-z0-9+=,.@_-]+",
+      "Description": "Existing EC2 instance profile; no IAM resources will be created."
+    },
+    "ExistingRoleArn": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|arn:aws:iam::[0-9]{12}:role/.+",
+      "Description": "Usually leave blank for the existing /LabRole in this account. This assumes the standard lab role exists; it does not create one. prepare_lab.py verifies the profile and fills its actual role ARN, including any path."
+    },
+    "CertificateArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:acm:us-east-1:[0-9]{12}:certificate/[A-Za-z0-9-]+",
+      "Description": "HTTPS requires a certificate. Run tools/prepare_lab.py to pre-fill a temporary self-signed lab certificate without a domain, or supply an existing matching issued ACM certificate. Self-signed certificates cause browser warnings."
+    },
+    "ApplicationHostname": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?",
+      "Description": "LEAVE BLANK if you have no domain. The output uses the AWS load-balancer address. With a self-signed lab certificate, expect a trust/name warning. No domain purchase is required for that lab-only route."
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "AllowedPattern": "[^\\s@]+@[^\\s@]+\\.[^\\s@]+",
+      "Description": "Email for SNS alerts. You must click Confirm subscription in its email."
+    },
+    "AdminUsername": {
+      "Type": "String",
+      "Default": "admin",
+      "AllowedPattern": "[A-Za-z][A-Za-z0-9_-]{2,31}",
+      "Description": "Portal username. The generated login password is in ApplicationSecretArn."
+    },
+    "ZoneA": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Default": "us-east-1a",
+      "Description": "First zone; choose a zone supporting t3 instances."
+    },
+    "ZoneB": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Default": "us-east-1b",
+      "Description": "Second, different zone; choose one supporting t3 instances."
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": [
+        "t3.micro",
+        "t3.small"
+      ],
+      "Description": "One instance of this size is created in each zone."
+    },
+    "DBInstanceClass": {
+      "Type": "String",
+      "Default": "db.t3.micro",
+      "AllowedValues": [
+        "db.t3.micro",
+        "db.t3.small",
+        "db.t4g.micro",
+        "db.t4g.small"
+      ],
+      "Description": "Small PostgreSQL 16 class, subject to lab permissions and regional support."
+    },
+    "DBEngineVersion": {
+      "Type": "String",
+      "Default": "16",
+      "AllowedPattern": "16(\\.[0-9]+)?",
+      "Description": "PostgreSQL major 16 (AWS selects the default minor), or an available 16.x version confirmed by preflight. Engine availability changes."
+    },
+    "LogRetentionDays": {
+      "Type": "Number",
+      "Default": 1,
+      "AllowedValues": [
+        1,
+        3,
+        7,
+        14
+      ],
+      "Description": "Keep application logs for this many days. One day reduces retained lab logs; export evidence before it expires."
+    },
+    "LatestAmiId": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
+      "Description": "Latest Amazon Linux 2023 x86_64 image."
+    }
+  },
+  "Rules": {
+    "DifferentZones": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Equals": [
+                  {
+                    "Ref": "ZoneA"
+                  },
+                  {
+                    "Ref": "ZoneB"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "Choose two different Availability Zones."
+        }
+      ]
+    },
+    "RegionRestriction": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Equals": [
+              {
+                "Ref": "AWS::Region"
+              },
+              "us-east-1"
+            ]
+          },
+          "AssertDescription": "Deploy in N. Virginia (us-east-1)."
+        }
+      ]
+    }
+  },
+  "Conditions": {
+    "HasHostname": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ApplicationHostname"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasExistingRoleArn": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ExistingRoleArn"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Mappings": {
+    "GatewayCode": {
+      "Bundle": {
+        "Data": "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"
+      }
+    }
+  },
+  "Resources": {
+    "GatewayVPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-vpc"
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-igw"
+          }
+        ]
+      }
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicRoutes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-routes"
+          }
+        ]
+      }
+    },
+    "PublicDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        }
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "DataRoutes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-isolated-data-routes"
+          }
+        ]
+      }
+    },
+    "PublicSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.1.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-a"
+          }
+        ]
+      }
+    },
+    "AppSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.11.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-a"
+          }
+        ]
+      }
+    },
+    "DataSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.21.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-data-a"
+          }
+        ]
+      }
+    },
+    "NatEipA": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-ip-a"
+          }
+        ]
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "NatGatewayA": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetA"
+        },
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NatEipA",
+            "AllocationId"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-a"
+          }
+        ]
+      }
+    },
+    "AppRoutesA": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-routes-a"
+          }
+        ]
+      }
+    },
+    "AppDefaultRouteA": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesA"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayA"
+        }
+      }
+    },
+    "PublicRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        }
+      }
+    },
+    "AppRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "AppSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "AppRoutesA"
+        }
+      }
+    },
+    "DataRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "DataSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "DataRoutes"
+        }
+      }
+    },
+    "PublicSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.2.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-b"
+          }
+        ]
+      }
+    },
+    "AppSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.12.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-b"
+          }
+        ]
+      }
+    },
+    "DataSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.22.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-data-b"
+          }
+        ]
+      }
+    },
+    "NatEipB": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-ip-b"
+          }
+        ]
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "NatGatewayB": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetB"
+        },
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NatEipB",
+            "AllocationId"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-b"
+          }
+        ]
+      }
+    },
+    "AppRoutesB": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-routes-b"
+          }
+        ]
+      }
+    },
+    "AppDefaultRouteB": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesB"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayB"
+        }
+      }
+    },
+    "PublicRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        }
+      }
+    },
+    "AppRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "AppSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "AppRoutesB"
+        }
+      }
+    },
+    "DataRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "DataSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "DataRoutes"
+        }
+      }
+    },
+    "S3Endpoint": {
+      "Type": "AWS::EC2::VPCEndpoint",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "ServiceName": {
+          "Fn::Sub": "com.amazonaws.${AWS::Region}.s3"
+        },
+        "VpcEndpointType": "Gateway",
+        "RouteTableIds": [
+          {
+            "Ref": "AppRoutesA"
+          },
+          {
+            "Ref": "AppRoutesB"
+          }
+        ]
+      }
+    },
+    "AppSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "Private app: HTTPS from ALB only. Outbound DNS, HTTPS, package HTTP, and database TLS.",
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "udp",
+            "FromPort": 53,
+            "ToPort": 53,
+            "CidrIp": "10.0.0.0/16",
+            "Description": "VPC Amazon DNS (UDP)"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 53,
+            "ToPort": 53,
+            "CidrIp": "10.0.0.0/16",
+            "Description": "VPC Amazon DNS (TCP)"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 53,
+            "ToPort": 53,
+            "CidrIp": "169.254.169.253/32",
+            "Description": "Route 53 Resolver link-local DNS (UDP)"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 53,
+            "ToPort": 53,
+            "CidrIp": "169.254.169.253/32",
+            "Description": "Route 53 Resolver link-local DNS (TCP)"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "AWS APIs, TLS and dependency downloads"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "OS repository mirrors during bootstrap"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 5432,
+            "ToPort": 5432,
+            "CidrIp": "10.0.21.0/24",
+            "Description": "PostgreSQL data subnet A"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 5432,
+            "ToPort": 5432,
+            "CidrIp": "10.0.22.0/24",
+            "Description": "PostgreSQL data subnet B"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-sg"
+          }
+        ]
+      }
+    },
+    "AlbSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "Public HTTPS entry and HTTP redirect; targets only on HTTPS.",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "User HTTPS"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "Redirect to HTTPS"
+          }
+        ],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8443,
+            "ToPort": 8443,
+            "DestinationSecurityGroupId": {
+              "Fn::GetAtt": [
+                "AppSecurityGroup",
+                "GroupId"
+              ]
+            },
+            "Description": "Private HTTPS targets"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-alb-sg"
+          }
+        ]
+      }
+    },
+    "AlbToAppIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Fn::GetAtt": [
+            "AppSecurityGroup",
+            "GroupId"
+          ]
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt": [
+            "AlbSecurityGroup",
+            "GroupId"
+          ]
+        },
+        "Description": "Only the ALB can reach application HTTPS"
+      }
+    },
+    "DatabaseSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "PostgreSQL only from the gateway app tier.",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 5432,
+            "ToPort": 5432,
+            "SourceSecurityGroupId": {
+              "Fn::GetAtt": [
+                "AppSecurityGroup",
+                "GroupId"
+              ]
+            },
+            "Description": "PostgreSQL from private app servers"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-db-sg"
+          }
+        ]
+      }
+    },
+    "FilesBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "AbortIncompleteUploads",
+              "Status": "Enabled",
+              "AbortIncompleteMultipartUpload": {
+                "DaysAfterInitiation": 1
+              }
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-files"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "FilesBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "FilesBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ApplicationObjectAccess",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::If": [
+                    "HasExistingRoleArn",
+                    {
+                      "Ref": "ExistingRoleArn"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LabRole"
+                    }
+                  ]
+                }
+              },
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts"
+              ],
+              "Resource": {
+                "Fn::Sub": "${FilesBucket.Arn}/assets/*"
+              }
+            },
+            {
+              "Sid": "ApplicationListAssets",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::If": [
+                    "HasExistingRoleArn",
+                    {
+                      "Ref": "ExistingRoleArn"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LabRole"
+                    }
+                  ]
+                }
+              },
+              "Action": "s3:ListBucket",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "FilesBucket",
+                  "Arn"
+                ]
+              },
+              "Condition": {
+                "StringLike": {
+                  "s3:prefix": [
+                    "assets/",
+                    "assets/*"
+                  ]
+                }
+              }
+            },
+            {
+              "Sid": "RequireTLS",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "FilesBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${FilesBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false",
+                  "aws:PrincipalIsAWSService": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "DatabaseAppSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "Generated credentials for restricted gateway PostgreSQL application user.",
+        "GenerateSecretString": {
+          "SecretStringTemplate": "{\"username\":\"gateway_app\"}",
+          "GenerateStringKey": "password",
+          "PasswordLength": 40,
+          "ExcludePunctuation": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "ApplicationSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "Portal login. View this secret after deployment to retrieve the generated password.",
+        "GenerateSecretString": {
+          "SecretStringTemplate": {
+            "Fn::Sub": "{\"username\":\"${AdminUsername}\"}"
+          },
+          "GenerateStringKey": "password",
+          "PasswordLength": 40,
+          "ExcludePunctuation": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "DatabaseSubnets": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": "Private data subnets in two different Availability Zones.",
+        "SubnetIds": [
+          {
+            "Ref": "DataSubnetA"
+          },
+          {
+            "Ref": "DataSubnetB"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "DatabaseParameters": {
+      "Type": "AWS::RDS::DBParameterGroup",
+      "Properties": {
+        "Description": "Gateway PostgreSQL 16 requires encrypted client connections.",
+        "Family": "postgres16",
+        "Parameters": {
+          "rds.force_ssl": "1"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "GatewayDatabase": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "Engine": "postgres",
+        "EngineVersion": {
+          "Ref": "DBEngineVersion"
+        },
+        "DBParameterGroupName": {
+          "Ref": "DatabaseParameters"
+        },
+        "DBInstanceClass": {
+          "Ref": "DBInstanceClass"
+        },
+        "DBName": "gateway",
+        "MasterUsername": "gateway_admin",
+        "ManageMasterUserPassword": true,
+        "AllocatedStorage": "20",
+        "StorageType": "gp3",
+        "StorageEncrypted": true,
+        "MultiAZ": true,
+        "PubliclyAccessible": false,
+        "Port": "5432",
+        "DBSubnetGroupName": {
+          "Ref": "DatabaseSubnets"
+        },
+        "VPCSecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "DatabaseSecurityGroup",
+              "GroupId"
+            ]
+          }
+        ],
+        "BackupRetentionPeriod": 1,
+        "DeleteAutomatedBackups": true,
+        "DeletionProtection": false,
+        "MonitoringInterval": 0,
+        "EnablePerformanceInsights": false,
+        "AutoMinorVersionUpgrade": true,
+        "CopyTagsToSnapshot": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-postgres"
+          }
+        ]
+      },
+      "DeletionPolicy": "Delete",
+      "UpdateReplacePolicy": "Delete"
+    },
+    "AppLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/${AWS::StackName}/gateway"
+        },
+        "RetentionInDays": {
+          "Ref": "LogRetentionDays"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "AlertTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Corporate Gateway alerts",
+        "TopicName": {
+          "Fn::Sub": "${AWS::StackName}-alerts"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "AlertTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "Topics": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CloudWatchPublish",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Action": "sns:Publish",
+              "Resource": {
+                "Ref": "AlertTopic"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-*"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "EmailSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "AlertTopic"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "AlertEmail"
+        }
+      }
+    },
+    "GatewayALB": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "Scheme": "internet-facing",
+        "Type": "application",
+        "IpAddressType": "ipv4",
+        "Subnets": [
+          {
+            "Ref": "PublicSubnetA"
+          },
+          {
+            "Ref": "PublicSubnetB"
+          }
+        ],
+        "SecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "AlbSecurityGroup",
+              "GroupId"
+            ]
+          }
+        ],
+        "LoadBalancerAttributes": [
+          {
+            "Key": "idle_timeout.timeout_seconds",
+            "Value": "120"
+          },
+          {
+            "Key": "routing.http.drop_invalid_header_fields.enabled",
+            "Value": "true"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-alb"
+          }
+        ]
+      },
+      "DependsOn": [
+        "GatewayAttachment",
+        "PublicDefaultRoute"
+      ]
+    },
+    "GatewayTargets": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": {
+        "Name": {
+          "Fn::Join": [
+            "",
+            [
+              "gw-",
+              {
+                "Fn::Select": [
+                  0,
+                  {
+                    "Fn::Split": [
+                      "-",
+                      {
+                        "Fn::Select": [
+                          2,
+                          {
+                            "Fn::Split": [
+                              "/",
+                              {
+                                "Ref": "AWS::StackId"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          ]
+        },
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "TargetType": "instance",
+        "Protocol": "HTTPS",
+        "Port": 8443,
+        "HealthCheckProtocol": "HTTPS",
+        "HealthCheckPort": "traffic-port",
+        "HealthCheckPath": "/health",
+        "HealthCheckIntervalSeconds": 15,
+        "HealthCheckTimeoutSeconds": 5,
+        "HealthyThresholdCount": 2,
+        "UnhealthyThresholdCount": 2,
+        "Matcher": {
+          "HttpCode": "200"
+        },
+        "TargetGroupAttributes": [
+          {
+            "Key": "deregistration_delay.timeout_seconds",
+            "Value": "15"
+          },
+          {
+            "Key": "stickiness.enabled",
+            "Value": "false"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-targets"
+          }
+        ],
+        "Targets": [
+          {
+            "Id": {
+              "Ref": "AppServerA"
+            },
+            "Port": 8443
+          },
+          {
+            "Id": {
+              "Ref": "AppServerB"
+            },
+            "Port": 8443
+          }
+        ]
+      }
+    },
+    "HttpsListener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "LoadBalancerArn": {
+          "Ref": "GatewayALB"
+        },
+        "Protocol": "HTTPS",
+        "Port": 443,
+        "Certificates": [
+          {
+            "CertificateArn": {
+              "Ref": "CertificateArn"
+            }
+          }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-TLS13-1-2-2021-06",
+        "DefaultActions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": {
+              "Ref": "GatewayTargets"
+            }
+          }
+        ]
+      }
+    },
+    "HttpRedirect": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "LoadBalancerArn": {
+          "Ref": "GatewayALB"
+        },
+        "Protocol": "HTTP",
+        "Port": 80,
+        "DefaultActions": [
+          {
+            "Type": "redirect",
+            "RedirectConfig": {
+              "Protocol": "HTTPS",
+              "Port": "443",
+              "StatusCode": "HTTP_301"
+            }
+          }
+        ]
+      }
+    },
+    "AppServerA": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "LatestAmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "ExistingInstanceProfile"
+        },
+        "Monitoring": false,
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "AppSubnetA"
+            },
+            "GroupSet": [
+              {
+                "Fn::GetAtt": [
+                  "AppSecurityGroup",
+                  "GroupId"
+                ]
+              }
+            ],
+            "AssociatePublicIpAddress": false,
+            "DeleteOnTermination": true
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "Encrypted": true,
+              "VolumeSize": 8,
+              "VolumeType": "gp3",
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                {
+                  "Fn::Sub": [
+                    "#!/bin/bash\nset -Eeuo pipefail\ndnf install -y aws-cfn-bootstrap\nsignal_reason() {\n  stage=$(cat /var/log/gateway-setup-stage 2>/dev/null || echo bootstrap)\n  err=$(tr '\\n' ' ' </var/log/gateway-setup-error 2>/dev/null | cut -c1-120 || true)\n  if test -n \"$err\"; then printf 'Setup exit %s; stage: %s; error: %s' \"$1\" \"$stage\" \"$err\"\n  else printf 'Setup exit %s; stage: %s' \"$1\" \"$stage\"; fi\n}\ntrap 'rc=$?; /opt/aws/bin/cfn-signal -e \"$rc\" --reason \"$(signal_reason \"$rc\")\" --stack \"${AWS::StackName}\" --resource \"AppServerA\" --region \"${AWS::Region}\" || true' EXIT\ninstall -d -m 750 /etc/gateway\nmkdir -p /opt/gateway/src\n/opt/aws/bin/cfn-init -v --stack \"${AWS::StackName}\" --resource \"AppServerA\" --region \"${AWS::Region}\"\ncat > /etc/gateway/runtime.json <<'GATEWAY_CONFIG'\n{\n  \"region\": \"${AWS::Region}\",\n  \"db_host\": \"${GatewayDatabase.Endpoint.Address}\",\n  \"db_name\": \"gateway\",\n  \"db_master_secret\": \"${MasterSecretArn}\",\n  \"db_app_secret\": \"${DatabaseAppSecret}\",\n  \"app_secret\": \"${ApplicationSecret}\",\n  \"bucket\": \"${FilesBucket}\",\n  \"alb_arn\": \"${GatewayALB}\",\n  \"target_group_name\": \"${TargetGroupName}\",\n  \"dashboard_name\": \"${AWS::StackName}-health\",\n  \"topic_arn\": \"${AlertTopic}\",\n  \"stack_name\": \"${AWS::StackName}\",\n  \"instance_name\": \"app-a\",\n  \"zone\": \"${ZoneA}\",\n  \"alarm_name\": \"${AWS::StackName}-healthy-targets\",\n  \"log_group\": \"${AppLogs}\",\n  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n}\nGATEWAY_CONFIG\npython3 -c \"import base64,lzma,io,tarfile; data=lzma.decompress(base64.b64decode(open('/opt/gateway/bundle.b64').read())); tarfile.open(fileobj=io.BytesIO(data)).extractall('/opt/gateway/src')\"\n",
+                    {
+                      "TargetGroupName": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "gw-",
+                            {
+                              "Fn::Select": [
+                                0,
+                                {
+                                  "Fn::Split": [
+                                    "-",
+                                    {
+                                      "Fn::Select": [
+                                        2,
+                                        {
+                                          "Fn::Split": [
+                                            "/",
+                                            {
+                                              "Ref": "AWS::StackId"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        ]
+                      },
+                      "MasterSecretArn": {
+                        "Fn::GetAtt": [
+                          "GatewayDatabase",
+                          "MasterUserSecret.SecretArn"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "\nexport GATEWAY_CONFIG=/etc/gateway/runtime.json\nbash /opt/gateway/src/install.sh\n"
+              ]
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-a"
+          }
+        ]
+      },
+      "DependsOn": [
+        "AppDefaultRouteA",
+        "AppRouteAssociationA",
+        "S3Endpoint",
+        "FilesBucketPolicy",
+        "AlbToAppIngress"
+      ],
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": 1,
+          "Timeout": "PT25M"
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/opt/gateway/bundle.b64": {
+                "content": {
+                  "Fn::FindInMap": [
+                    "GatewayCode",
+                    "Bundle",
+                    "Data"
+                  ]
+                },
+                "mode": "000600",
+                "owner": "root",
+                "group": "root"
+              }
+            }
+          }
+        }
+      }
+    },
+    "AppServerB": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "LatestAmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "ExistingInstanceProfile"
+        },
+        "Monitoring": false,
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "AppSubnetB"
+            },
+            "GroupSet": [
+              {
+                "Fn::GetAtt": [
+                  "AppSecurityGroup",
+                  "GroupId"
+                ]
+              }
+            ],
+            "AssociatePublicIpAddress": false,
+            "DeleteOnTermination": true
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "Encrypted": true,
+              "VolumeSize": 8,
+              "VolumeType": "gp3",
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                {
+                  "Fn::Sub": [
+                    "#!/bin/bash\nset -Eeuo pipefail\ndnf install -y aws-cfn-bootstrap\nsignal_reason() {\n  stage=$(cat /var/log/gateway-setup-stage 2>/dev/null || echo bootstrap)\n  err=$(tr '\\n' ' ' </var/log/gateway-setup-error 2>/dev/null | cut -c1-120 || true)\n  if test -n \"$err\"; then printf 'Setup exit %s; stage: %s; error: %s' \"$1\" \"$stage\" \"$err\"\n  else printf 'Setup exit %s; stage: %s' \"$1\" \"$stage\"; fi\n}\ntrap 'rc=$?; /opt/aws/bin/cfn-signal -e \"$rc\" --reason \"$(signal_reason \"$rc\")\" --stack \"${AWS::StackName}\" --resource \"AppServerB\" --region \"${AWS::Region}\" || true' EXIT\ninstall -d -m 750 /etc/gateway\nmkdir -p /opt/gateway/src\n/opt/aws/bin/cfn-init -v --stack \"${AWS::StackName}\" --resource \"AppServerB\" --region \"${AWS::Region}\"\ncat > /etc/gateway/runtime.json <<'GATEWAY_CONFIG'\n{\n  \"region\": \"${AWS::Region}\",\n  \"db_host\": \"${GatewayDatabase.Endpoint.Address}\",\n  \"db_name\": \"gateway\",\n  \"db_master_secret\": \"${MasterSecretArn}\",\n  \"db_app_secret\": \"${DatabaseAppSecret}\",\n  \"app_secret\": \"${ApplicationSecret}\",\n  \"bucket\": \"${FilesBucket}\",\n  \"alb_arn\": \"${GatewayALB}\",\n  \"target_group_name\": \"${TargetGroupName}\",\n  \"dashboard_name\": \"${AWS::StackName}-health\",\n  \"topic_arn\": \"${AlertTopic}\",\n  \"stack_name\": \"${AWS::StackName}\",\n  \"instance_name\": \"app-b\",\n  \"zone\": \"${ZoneB}\",\n  \"alarm_name\": \"${AWS::StackName}-healthy-targets\",\n  \"log_group\": \"${AppLogs}\",\n  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n}\nGATEWAY_CONFIG\npython3 -c \"import base64,lzma,io,tarfile; data=lzma.decompress(base64.b64decode(open('/opt/gateway/bundle.b64').read())); tarfile.open(fileobj=io.BytesIO(data)).extractall('/opt/gateway/src')\"\n",
+                    {
+                      "TargetGroupName": {
+                        "Fn::Join": [
+                          "",
+                          [
+                            "gw-",
+                            {
+                              "Fn::Select": [
+                                0,
+                                {
+                                  "Fn::Split": [
+                                    "-",
+                                    {
+                                      "Fn::Select": [
+                                        2,
+                                        {
+                                          "Fn::Split": [
+                                            "/",
+                                            {
+                                              "Ref": "AWS::StackId"
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        ]
+                      },
+                      "MasterSecretArn": {
+                        "Fn::GetAtt": [
+                          "GatewayDatabase",
+                          "MasterUserSecret.SecretArn"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "\nexport GATEWAY_CONFIG=/etc/gateway/runtime.json\nbash /opt/gateway/src/install.sh\n"
+              ]
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-b"
+          }
+        ]
+      },
+      "DependsOn": [
+        "AppDefaultRouteB",
+        "AppRouteAssociationB",
+        "S3Endpoint",
+        "FilesBucketPolicy",
+        "AlbToAppIngress"
+      ],
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": 1,
+          "Timeout": "PT25M"
+        }
+      },
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "/opt/gateway/bundle.b64": {
+                "content": {
+                  "Fn::FindInMap": [
+                    "GatewayCode",
+                    "Bundle",
+                    "Data"
+                  ]
+                },
+                "mode": "000600",
+                "owner": "root",
+                "group": "root"
+              }
+            }
+          }
+        }
+      }
+    },
+    "HealthyTargetsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-healthy-targets"
+        },
+        "AlarmDescription": "Fewer than two healthy Flask servers for two consecutive minutes; test by stopping ONE app server, then restart it.",
+        "Namespace": "AWS/ApplicationELB",
+        "MetricName": "HealthyHostCount",
+        "Dimensions": [
+          {
+            "Name": "LoadBalancer",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayALB",
+                "LoadBalancerFullName"
+              ]
+            }
+          },
+          {
+            "Name": "TargetGroup",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayTargets",
+                "TargetGroupFullName"
+              ]
+            }
+          }
+        ],
+        "Statistic": "Minimum",
+        "Period": 60,
+        "EvaluationPeriods": 2,
+        "DatapointsToAlarm": 2,
+        "Threshold": 2,
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching",
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ]
+      },
+      "DependsOn": "AlertTopicPolicy"
+    },
+    "TargetErrorsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${AWS::StackName}-target-errors"
+        },
+        "AlarmDescription": "At least five target HTTP 5xx responses in one minute.",
+        "Namespace": "AWS/ApplicationELB",
+        "MetricName": "HTTPCode_Target_5XX_Count",
+        "Dimensions": [
+          {
+            "Name": "LoadBalancer",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayALB",
+                "LoadBalancerFullName"
+              ]
+            }
+          },
+          {
+            "Name": "TargetGroup",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayTargets",
+                "TargetGroupFullName"
+              ]
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 60,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": 5,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ]
+      },
+      "DependsOn": "AlertTopicPolicy"
+    },
+    "HealthDashboard": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardName": {
+          "Fn::Sub": "${AWS::StackName}-health"
+        },
+        "DashboardBody": {
+          "Fn::Sub": "{\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"Healthy and unhealthy app servers\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/ApplicationELB\",\"HealthyHostCount\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",\"TargetGroup\",\"${GatewayTargets.TargetGroupFullName}\",{\"stat\":\"Minimum\",\"label\":\"Healthy (minimum)\"}],[\"AWS/ApplicationELB\",\"UnHealthyHostCount\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",\"TargetGroup\",\"${GatewayTargets.TargetGroupFullName}\",{\"stat\":\"Maximum\",\"label\":\"Unhealthy (maximum)\"}]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":12,\"y\":0,\"width\":12,\"height\":6,\"properties\":{\"title\":\"Requests reaching the load balancer\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/ApplicationELB\",\"RequestCount\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",{\"stat\":\"Sum\"}]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":0,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"Customer-visible server errors\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/ApplicationELB\",\"HTTPCode_Target_5XX_Count\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",\"TargetGroup\",\"${GatewayTargets.TargetGroupFullName}\",{\"stat\":\"Sum\",\"label\":\"App target 5xx\"}],[\"AWS/ApplicationELB\",\"HTTPCode_ELB_5XX_Count\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",{\"stat\":\"Sum\",\"label\":\"Load balancer 5xx\"}]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":12,\"y\":6,\"width\":12,\"height\":6,\"properties\":{\"title\":\"Response time (95th percentile)\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/ApplicationELB\",\"TargetResponseTime\",\"LoadBalancer\",\"${GatewayALB.LoadBalancerFullName}\",\"TargetGroup\",\"${GatewayTargets.TargetGroupFullName}\",{\"stat\":\"p95\"}]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":0,\"y\":12,\"width\":12,\"height\":6,\"properties\":{\"title\":\"EC2 CPU by app server\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/EC2\",\"CPUUtilization\",\"InstanceId\",\"${AppServerA}\",{\"label\":\"App A\"}],[\"AWS/EC2\",\"CPUUtilization\",\"InstanceId\",\"${AppServerB}\",{\"label\":\"App B\"}]],\"period\":300,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":12,\"y\":12,\"width\":12,\"height\":6,\"properties\":{\"title\":\"PostgreSQL CPU\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"CPUUtilization\",\"DBInstanceIdentifier\",\"${GatewayDatabase}\"]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":0,\"y\":18,\"width\":12,\"height\":6,\"properties\":{\"title\":\"PostgreSQL database connections\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"DatabaseConnections\",\"DBInstanceIdentifier\",\"${GatewayDatabase}\"]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"metric\",\"x\":12,\"y\":18,\"width\":12,\"height\":6,\"properties\":{\"title\":\"PostgreSQL free storage\",\"region\":\"${AWS::Region}\",\"view\":\"timeSeries\",\"stacked\":false,\"metrics\":[[\"AWS/RDS\",\"FreeStorageSpace\",\"DBInstanceIdentifier\",\"${GatewayDatabase}\"]],\"period\":60,\"stat\":\"Average\"}},{\"type\":\"alarm\",\"x\":0,\"y\":24,\"width\":24,\"height\":3,\"properties\":{\"title\":\"Email alert alarms\",\"alarms\":[\"${HealthyTargetsAlarm.Arn}\",\"${TargetErrorsAlarm.Arn}\"]}}]}"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ApplicationURL": {
+      "Value": {
+        "Fn::If": [
+          "HasHostname",
+          {
+            "Fn::Sub": "https://${ApplicationHostname}"
+          },
+          {
+            "Fn::Sub": "https://${GatewayALB.DNSName}"
+          }
+        ]
+      },
+      "Description": "Portal URL. A supplied hostname needs DNS pointing to the ALB. ALB DNS URL may not match your certificate."
+    },
+    "LoadBalancerDNS": {
+      "Value": {
+        "Fn::GetAtt": [
+          "GatewayALB",
+          "DNSName"
+        ]
+      },
+      "Description": "DNS target for your validated application hostname."
+    },
+    "ExistingRoleUsed": {
+      "Value": {
+        "Fn::If": [
+          "HasExistingRoleArn",
+          {
+            "Ref": "ExistingRoleArn"
+          },
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/LabRole"
+          }
+        ]
+      },
+      "Description": "Existing role named in the bucket policy. It must match the role in ExistingInstanceProfile. The template creates no IAM role."
+    },
+    "CloudWatchDashboardURL": {
+      "Value": {
+        "Fn::Sub": "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}-health"
+      },
+      "Description": "Dashboard with ALB, EC2, RDS and alarms."
+    },
+    "DashboardName": {
+      "Value": {
+        "Fn::Sub": "${AWS::StackName}-health"
+      },
+      "Description": "CloudWatch dashboard name."
+    },
+    "AppServerA": {
+      "Value": {
+        "Ref": "AppServerA"
+      },
+      "Description": "Private app instance ID. Use EC2 Connect > Session Manager."
+    },
+    "AppServerB": {
+      "Value": {
+        "Ref": "AppServerB"
+      },
+      "Description": "Private app instance ID. Use EC2 Connect > Session Manager."
+    },
+    "BucketName": {
+      "Value": {
+        "Ref": "FilesBucket"
+      },
+      "Description": "Retained after stack deletion. Empty ALL object versions/delete markers, then delete the bucket manually after evidence is saved."
+    },
+    "DatabaseIdentifier": {
+      "Value": {
+        "Ref": "GatewayDatabase"
+      },
+      "Description": "Lab database. Stack deletion permanently deletes it without a final snapshot."
+    },
+    "DatabaseEndpoint": {
+      "Value": {
+        "Fn::GetAtt": [
+          "GatewayDatabase",
+          "Endpoint.Address"
+        ]
+      },
+      "Description": "Private PostgreSQL endpoint; connections must verify TLS."
+    },
+    "ApplicationSecretArn": {
+      "Value": {
+        "Ref": "ApplicationSecret"
+      },
+      "Description": "View this secret in Secrets Manager to retrieve the portal username/password. Never put the password in screenshots."
+    },
+    "DatabaseAppSecretArn": {
+      "Value": {
+        "Ref": "DatabaseAppSecret"
+      },
+      "Description": "Generated restricted PostgreSQL app-user credentials; not the portal password."
+    },
+    "AlertTopicArn": {
+      "Value": {
+        "Ref": "AlertTopic"
+      },
+      "Description": "SNS email topic. Confirm the emailed subscription before running alarm tests."
+    },
+    "HealthyTargetsAlarmName": {
+      "Value": {
+        "Ref": "HealthyTargetsAlarm"
+      },
+      "Description": "Main availability alarm: minimum healthy hosts <2 for two minutes."
+    },
+    "TargetGroupArn": {
+      "Value": {
+        "Ref": "GatewayTargets"
+      },
+      "Description": "ALB target group for target-health evidence."
+    },
+    "LogGroupName": {
+      "Value": {
+        "Ref": "AppLogs"
+      },
+      "Description": "Application, Nginx and bootstrap logs if permitted by the existing LabRole."
+    }
+  }
+}
