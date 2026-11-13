@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Corporate Gateway</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-story" aria-label="About the document gateway"><a class="brand" href="/login"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 3 7v6c0 5 9 8 9 8s9-3 9-8V7l-9-4Z"/><path d="m8 12 3 3 5-6"/></svg></span><span>Corporate<span class="brand-second">Gateway</span></span></a><div class="login-story-copy"><div class="eyebrow">A SHARED DOCUMENT WORKSPACE</div><h1>One place for your<br>department’s documents.</h1><p>Upload files, keep clear records and check the services supporting your workspace.</p><div class="login-features"><span><i aria-hidden="true">✓</i> Shared upload records</span><span><i aria-hidden="true">✓</i> SHA-256 integrity checks</span><span><i aria-hidden="true">✓</i> Operator monitoring panel</span></div></div><div class="login-story-foot">Corporate Cloud Storage Gateway · INFS3701</div></section>
+    <section class="login-form-side" aria-labelledby="login-title"><div class="login-card"><span class="login-key" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg></span><div class="eyebrow">WELCOME TO YOUR WORKSPACE</div><h2 id="login-title">Sign in</h2><p class="login-intro">Use your workspace administrator credentials.</p>{% if error %}<div class="notice error login-error" role="alert">{{ error }}</div>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required autofocus maxlength="80"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button class="button primary full-width" type="submit">Sign in <span aria-hidden="true">→</span></button></form><div class="login-help"><strong>First time signing in?</strong><p>Retrieve the application credentials from the Secrets Manager secret shown in your stack outputs. The database password is separate.</p></div></div><div class="login-form-footer">Access is checked by the application server.</div></section>
+  </main>
+</body>
+</html>
