@@ -1,0 +1,109 @@
+LEARNER LAB CREDIT GUIDE - 12 NOVEMBER 2026
+
+Use us-east-1. All amounts below are USD planning allowances, not a guaranteed
+Learner Lab debit, a verified AWS Pricing Calculator quotation, or a Free Tier
+claim. Lab restrictions, existing resources, traffic and actual usage matter.
+
+QUICK ANSWER
+Uploading the JSON does not itself consume meaningful credits. The resources
+created by the stack continue to incur charges while provisioned. Prepare the
+report outline, demo script and test files locally, then use one short live
+session to deploy, confirm SNS, test, record evidence and delete the stack.
+
+Provisional low-traffic allowance for the WHOLE stack:
+  6 hours:       approximately US$1.20-1.50
+  24 hours:      approximately US$4.80-6.00
+  730 hours:     approximately US$146-182.50
+Allow a margin for installation retries, traffic and other existing lab stacks.
+These estimates include the two app servers and Multi-AZ database design; RDS
+rates must be confirmed in AWS Pricing Calculator before quoting an exact total.
+The assignment's 12-month production estimate is a separate deliverable from
+this short Learner Lab build-and-demonstrate allowance.
+
+MAIN COST DRIVERS
+Two managed NAT gateways are US$0.09/hour together at the reference rate. Their
+two public IPv4 addresses add US$0.01/hour: approximately US$2.40/day before NAT
+data processing. ALB, database, EC2, their storage and monitoring add more.
+The ALB also consumes billable public IPv4 addresses and capacity units.
+
+SMALL OPTIMIZATIONS ALREADY IN THIS UPDATED TEMPLATE
+- LogRetentionDays defaults to 1, with 3/7/14-day choices. Download any needed
+  logs/evidence before expiry. This mainly avoids accumulating retained logs;
+  it does not remove log ingestion charges or materially cut NAT/DB charges.
+- EC2 detailed monitoring is explicitly off. The dashboard uses basic EC2 CPU
+  monitoring at five-minute resolution; ALB alarm periods remain one minute.
+- Two t3.micro app servers, 8 GiB encrypted disks each; db.t3.micro default,
+  20 GiB Multi-AZ RDS storage; no Performance Insights or enhanced RDS monitoring.
+- A free S3 gateway endpoint keeps app-to-S3 traffic off the NAT gateways.
+- No Lambda, new IAM roles, or separate costly custom CPU metrics are added.
+
+WHY THE CORE DESIGN STAYS INTACT
+The brief requires multiple compute instances behind a load balancer, two AZs,
+and a resilient managed database. Do not reduce to one app server or Single-AZ
+RDS to save credits. The managed NAT per AZ avoids routing both private app
+subnets through one AZ for package/API access. NAT instances could reduce cost
+but add two servers and OS/routing maintenance; they are not part of this tested
+package. Changing egress now would require new deployment and failure tests.
+
+LOW-CREDIT RUN PLAN
+1. Check Learner Lab balance and existing EC2, NAT gateways, ALBs, RDS instances,
+   public IPv4 addresses and stacks. An older stack may already use credits.
+   Do not delete teammates' or lab-managed resources without checking ownership.
+2. Read START_HERE.txt; prepare role/profile, ACM certificate, alert email,
+   small dummy upload files, screenshot checklist and video script BEFORE launch.
+   tools/prepare_lab.py discovers the existing profile role and pre-fills a
+   temporary lab certificate in gateway-stack-ready.json. It creates no stack.
+3. Run the read-only preflight. It checks known prerequisites, not all create
+   permissions, future capacity or sufficient credits.
+4. Create ONE stack. Wait for CREATE_COMPLETE, two healthy targets and an OK
+   alarm baseline. Confirm the SNS subscription in your inbox immediately.
+5. Test login, upload, download/hash and shared records/sessions across servers.
+   Capture the CloudWatch dashboard, a controlled failure, ALARM email and
+   recovered OK state. Follow the timing/evidence instructions in START_HERE.
+6. Record the live demo while the stack is healthy. Export CSV/logs/screenshots
+   and save the generated administrator password only as instructed.
+7. Delete the stack once evidence is safely saved. This training template deletes
+   the RDS database without a final snapshot. Check CloudFormation finishes.
+8. The private versioned S3 bucket is intentionally retained. Download anything
+   required, then explicitly empty all versions and delete markers and delete
+   the bucket if no longer needed. Check for failed stack deletes, remaining
+   NAT gateways/EIPs, ALB and manual certificates or snapshots you created.
+
+Stopping only EC2 or ending the lab session must not be treated as full cleanup.
+NAT gateways and ALBs do not have an EC2-style stop control; retained resources
+can continue to cost money. A stopped RDS database also retains billable storage.
+Never delete the shared LabRole or lab-managed resources.
+
+REQUIREMENTS AND HONEST LIMITS
+The package implements the Corporate Cloud Storage Gateway extension (Flask,
+S3 upload/download with SHA-256 metadata in PostgreSQL), not the cafe example.
+It includes HTTPS, encrypted storage, private app/DB subnets, ALB health checks,
+two app servers, Multi-AZ RDS, dashboard, alarms and SNS email subscription.
+The operator panel shows service checks and provides a guarded temporary health
+test. Automatic scaling is optional in the brief and is not claimed here.
+
+No new IAM role is created. The existing Learner Lab role must be permitted for
+bootstrap/runtime operations; its broad lab permissions are a documented
+environment constraint, not proof of production least privilege. A separate
+illustrative production IAM policy is included but must NOT be attached to the
+shared LabRole. Public trusted HTTPS needs a suitable issued ACM certificate;
+the optional self-signed helper is only for disclosed dummy-data lab testing.
+SNS email confirmation is manual. No live AWS deployment, successful schema
+initialization, email delivery, failover or mobile-browser test is claimed by
+the local tests. Collect actual deployment evidence before writing the report.
+
+PRIMARY PRICE/BILLING REFERENCES (CHECKED 12 NOVEMBER 2026)
+https://aws.amazon.com/vpc/pricing/
+https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html
+https://aws.amazon.com/ec2/instance-types/t3/
+https://aws.amazon.com/elasticloadbalancing/pricing/
+https://aws.amazon.com/rds/postgresql/pricing/
+https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_OnDemandDBInstances.html
+https://calculator.aws/
+
+Use the AWS Pricing Calculator in us-east-1 with two t3.micro app servers, two
+8 GiB gp3 disks, one ALB plus expected LCUs, Multi-AZ PostgreSQL db.t3.micro with
+20 GiB provisioned storage, two NAT gateways, all public IPv4 addresses, S3,
+Secrets Manager, CloudWatch logs/dashboard/alarms and expected data transfer.
+Multi-AZ RDS billing includes the primary and standby. Do not count them twice
+if the calculator's Multi-AZ option has already included both.

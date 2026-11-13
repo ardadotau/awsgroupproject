@@ -1,0 +1,49 @@
+SIMPLIFIED BOOTSTRAP UPDATE
+Direct private HTTPS on 8443; no Nginx or CloudWatch log agent. Native ALB/EC2/RDS
+metrics and alarms remain. Application logs are local. The old screenshot does
+not contain a failure reason; its root cause is not established.
+
+LOCAL VERIFICATION AND DEPLOYMENT STATUS
+
+This revised package has not been deployed into the user's AWS Academy Learner Lab. An earlier version failed there; its full error is unavailable.
+No real alert email has been sent or received as part of these local checks.
+
+PASS - 10 local application tests: server-side authentication, CSRF, Unicode
+       input rejection, login rate limiting, upload validation, SHA-256,
+       authenticated download, idempotent retry, S3-write failure handling,
+       records/sessions shared between instances, logout revocation,
+       TLS verification configuration and guarded automatic failure recovery.
+PASS - Python source compilation; JavaScript syntax; shell syntax.
+PASS - All pinned application dependencies have Python 3.11 Linux wheels.
+PASS - Jinja rendering and frontend/backend API/DOM contract checks.
+PASS - CloudFormation lint, resource dependency graph and no IAM resources.
+PASS - Conservative resolved EC2 User Data size below the 16 KB limit.
+PASS - Embedded source bundle matches the readable application files.
+PASS - Probe CSV helper tested locally for success/failure counts and safe output.
+PASS - Certificate helper syntax and local generation/cleanup with mocked AWS CLI.
+PASS - 8 additional local setup-helper tests: actual profile role/path defaults,
+       existing-certificate reuse, no overwrite, denied/empty profile handling,
+       wrong-account certificate rejection, denied import and unissued certificate.
+PASS - Optional standard LabRole fallback and no-domain template pass lint.
+CHECKED - Static login/document layout render. This is not a live browser test.
+
+NOT RUN - Real PostgreSQL integration: local database processes are blocked by
+          the execution environment. AWS schema initialization must succeed and
+          both app instances must signal readiness in the real lab.
+NOT RUN - JavaScript browser end-to-end test: local Chromium startup is blocked.
+          Complete the supplied upload/download/mobile checks after deployment.
+NOT RUN - AWS permissions, actual RDS/EC2 capacity, installation on Amazon Linux,
+          SNS confirmation/delivery, target failures, dashboard data and failover.
+
+The installer explicitly installs Python 3.11 for the current pinned packages;
+Amazon Linux 2023's default system python3 can remain 3.9. Do not replace the
+system interpreter. CloudFormation::Init supplies the compressed app bundle.
+
+An ACM certificate is required before stack creation. tools/prepare_lab.py reads
+an existing instance profile and pre-fills the actual role/certificate defaults.
+Its self-signed certificate helper is for dummy-data lab tests without a domain
+and does not provide browser trust. Actual AWS access remains unverified.
+Email confirmation is manual. Real deployment/test screenshots and timing logs
+must be collected by the group; local verification is not assignment evidence.
+
+PASS - Real local Gunicorn direct-HTTPS startup and /health request using offline sample services. This does not test PostgreSQL or AWS.
