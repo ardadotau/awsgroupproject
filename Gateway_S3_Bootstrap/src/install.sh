@@ -25,7 +25,7 @@ note_error() {
 phase 'Installing Python and system packages'
 ok=0
 for attempt in 1 2 3; do
-  if dnf install -y python3.11 python3.11-pip openssl curl >>"$DETAIL_LOG" 2>&1; then ok=1; break; fi
+  if timeout 300 dnf install -y python3.11 python3.11-pip openssl curl >>"$DETAIL_LOG" 2>&1; then ok=1; break; fi
   sleep 5
 done
 if test "$ok" -ne 1; then
@@ -46,7 +46,7 @@ phase 'Installing application dependencies'
 python3.11 -m venv /opt/gateway/venv
 ok=0
 for attempt in 1 2 3; do
-  if /opt/gateway/venv/bin/pip install --disable-pip-version-check -r "$SRC/requirements.txt" >>"$DETAIL_LOG" 2>&1; then ok=1; break; fi
+  if timeout 300 /opt/gateway/venv/bin/pip install --disable-pip-version-check -r "$SRC/requirements.txt" >>"$DETAIL_LOG" 2>&1; then ok=1; break; fi
   sleep 10
 done
 if test "$ok" -ne 1; then

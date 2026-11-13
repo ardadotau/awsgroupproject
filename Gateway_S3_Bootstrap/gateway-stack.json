@@ -1364,18 +1364,18 @@
               "",
               [
                 "#!/bin/bash\n",
-                "set -euxo pipefail\n",
+                "set -ux\n",
                 "exec > /var/log/gateway-userdata.log 2>&1\n",
                 "echo userdata-start > /var/log/gateway-setup-stage\n",
                 "echo wait-network > /var/log/gateway-setup-stage\n",
                 "ok=0\n",
-                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36; do\n",
-                "  if curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
+                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do\n",
+                "  if command -v curl >/dev/null && curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
                 "  sleep 5\n",
                 "done\n",
-                "test \"$ok\" -eq 1\n",
                 "echo install-tools > /var/log/gateway-setup-stage\n",
-                "dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "timeout 240 dnf install -y aws-cfn-bootstrap curl unzip || dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "test -x /opt/aws/bin/cfn-signal\n",
                 "trap '/opt/aws/bin/cfn-signal -e $? --reason userdata-failed --stack ",
                 {
                   "Ref": "AWS::StackName"
@@ -1387,6 +1387,8 @@
                   "Ref": "AWS::Region"
                 },
                 " || true' EXIT\n",
+                "test \"$ok\" -eq 1\n",
+                "command -v aws >/dev/null || timeout 180 dnf install -y awscli\n",
                 "echo download-bootstrap > /var/log/gateway-setup-stage\n",
                 "aws s3 cp s3://",
                 {
@@ -1418,124 +1420,117 @@
                 "install -d -m 750 /etc/gateway\n",
                 "echo write-config > /var/log/gateway-setup-stage\n",
                 "cat > /etc/gateway/runtime.json << \"EOF\"\n",
+                "{\n",
+                "  \"region\": \"",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\",\n",
+                "  \"db_host\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "Endpoint.Address"
+                  ]
+                },
+                "\",\n",
+                "  \"db_name\": \"gateway\",\n",
+                "  \"db_master_secret\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "MasterUserSecret.SecretArn"
+                  ]
+                },
+                "\",\n",
+                "  \"db_app_secret\": \"",
+                {
+                  "Ref": "DatabaseAppSecret"
+                },
+                "\",\n",
+                "  \"app_secret\": \"",
+                {
+                  "Ref": "ApplicationSecret"
+                },
+                "\",\n",
+                "  \"bucket\": \"",
+                {
+                  "Ref": "FilesBucket"
+                },
+                "\",\n",
+                "  \"alb_arn\": \"",
+                {
+                  "Ref": "GatewayALB"
+                },
+                "\",\n",
+                "  \"target_group_name\": \"",
                 {
                   "Fn::Join": [
                     "",
                     [
-                      "{\n",
-                      "  \"region\": \"",
+                      "gw-",
                       {
-                        "Ref": "AWS::Region"
-                      },
-                      "\",\n",
-                      "  \"db_host\": \"",
-                      {
-                        "Fn::GetAtt": [
-                          "GatewayDatabase",
-                          "Endpoint.Address"
+                        "Fn::Select": [
+                          0,
+                          {
+                            "Fn::Split": [
+                              "-",
+                              {
+                                "Fn::Select": [
+                                  2,
+                                  {
+                                    "Fn::Split": [
+                                      "/",
+                                      {
+                                        "Ref": "AWS::StackId"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
                         ]
-                      },
-                      "\",\n",
-                      "  \"db_name\": \"gateway\",\n",
-                      "  \"db_master_secret\": \"",
-                      {
-                        "Fn::GetAtt": [
-                          "GatewayDatabase",
-                          "MasterUserSecret.SecretArn"
-                        ]
-                      },
-                      "\",\n",
-                      "  \"db_app_secret\": \"",
-                      {
-                        "Ref": "DatabaseAppSecret"
-                      },
-                      "\",\n",
-                      "  \"app_secret\": \"",
-                      {
-                        "Ref": "ApplicationSecret"
-                      },
-                      "\",\n",
-                      "  \"bucket\": \"",
-                      {
-                        "Ref": "FilesBucket"
-                      },
-                      "\",\n",
-                      "  \"alb_arn\": \"",
-                      {
-                        "Ref": "GatewayALB"
-                      },
-                      "\",\n",
-                      "  \"target_group_name\": \"",
-                      {
-                        "Fn::Join": [
-                          "",
-                          [
-                            "gw-",
-                            {
-                              "Fn::Select": [
-                                0,
-                                {
-                                  "Fn::Split": [
-                                    "-",
-                                    {
-                                      "Fn::Select": [
-                                        2,
-                                        {
-                                          "Fn::Split": [
-                                            "/",
-                                            {
-                                              "Ref": "AWS::StackId"
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        ]
-                      },
-                      "\",\n",
-                      "  \"dashboard_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "-health\",\n",
-                      "  \"topic_arn\": \"",
-                      {
-                        "Ref": "AlertTopic"
-                      },
-                      "\",\n",
-                      "  \"stack_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "\",\n",
-                      "  \"instance_name\": \"",
-                      "app-a",
-                      "\",\n",
-                      "  \"zone\": \"",
-                      {
-                        "Ref": "ZoneA"
-                      },
-                      "\",\n",
-                      "  \"alarm_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "-healthy-targets\",\n",
-                      "  \"log_group\": \"",
-                      {
-                        "Ref": "AppLogs"
-                      },
-                      "\",\n",
-                      "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
-                      "}\n"
+                      }
                     ]
                   ]
                 },
+                "\",\n",
+                "  \"dashboard_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-health\",\n",
+                "  \"topic_arn\": \"",
+                {
+                  "Ref": "AlertTopic"
+                },
+                "\",\n",
+                "  \"stack_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "\",\n",
+                "  \"instance_name\": \"",
+                "app-a",
+                "\",\n",
+                "  \"zone\": \"",
+                {
+                  "Ref": "ZoneA"
+                },
+                "\",\n",
+                "  \"alarm_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-healthy-targets\",\n",
+                "  \"log_group\": \"",
+                {
+                  "Ref": "AppLogs"
+                },
+                "\",\n",
+                "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
+                "}\n",
                 "EOF\n",
                 "echo run-bootstrap > /var/log/gateway-setup-stage\n",
                 "trap - EXIT\n",
@@ -1576,7 +1571,7 @@
       "CreationPolicy": {
         "ResourceSignal": {
           "Count": 1,
-          "Timeout": "PT35M"
+          "Timeout": "PT50M"
         }
       }
     },
@@ -1633,18 +1628,18 @@
               "",
               [
                 "#!/bin/bash\n",
-                "set -euxo pipefail\n",
+                "set -ux\n",
                 "exec > /var/log/gateway-userdata.log 2>&1\n",
                 "echo userdata-start > /var/log/gateway-setup-stage\n",
                 "echo wait-network > /var/log/gateway-setup-stage\n",
                 "ok=0\n",
-                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36; do\n",
-                "  if curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
+                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do\n",
+                "  if command -v curl >/dev/null && curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
                 "  sleep 5\n",
                 "done\n",
-                "test \"$ok\" -eq 1\n",
                 "echo install-tools > /var/log/gateway-setup-stage\n",
-                "dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "timeout 240 dnf install -y aws-cfn-bootstrap curl unzip || dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "test -x /opt/aws/bin/cfn-signal\n",
                 "trap '/opt/aws/bin/cfn-signal -e $? --reason userdata-failed --stack ",
                 {
                   "Ref": "AWS::StackName"
@@ -1656,6 +1651,8 @@
                   "Ref": "AWS::Region"
                 },
                 " || true' EXIT\n",
+                "test \"$ok\" -eq 1\n",
+                "command -v aws >/dev/null || timeout 180 dnf install -y awscli\n",
                 "echo download-bootstrap > /var/log/gateway-setup-stage\n",
                 "aws s3 cp s3://",
                 {
@@ -1687,124 +1684,117 @@
                 "install -d -m 750 /etc/gateway\n",
                 "echo write-config > /var/log/gateway-setup-stage\n",
                 "cat > /etc/gateway/runtime.json << \"EOF\"\n",
+                "{\n",
+                "  \"region\": \"",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\",\n",
+                "  \"db_host\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "Endpoint.Address"
+                  ]
+                },
+                "\",\n",
+                "  \"db_name\": \"gateway\",\n",
+                "  \"db_master_secret\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "MasterUserSecret.SecretArn"
+                  ]
+                },
+                "\",\n",
+                "  \"db_app_secret\": \"",
+                {
+                  "Ref": "DatabaseAppSecret"
+                },
+                "\",\n",
+                "  \"app_secret\": \"",
+                {
+                  "Ref": "ApplicationSecret"
+                },
+                "\",\n",
+                "  \"bucket\": \"",
+                {
+                  "Ref": "FilesBucket"
+                },
+                "\",\n",
+                "  \"alb_arn\": \"",
+                {
+                  "Ref": "GatewayALB"
+                },
+                "\",\n",
+                "  \"target_group_name\": \"",
                 {
                   "Fn::Join": [
                     "",
                     [
-                      "{\n",
-                      "  \"region\": \"",
+                      "gw-",
                       {
-                        "Ref": "AWS::Region"
-                      },
-                      "\",\n",
-                      "  \"db_host\": \"",
-                      {
-                        "Fn::GetAtt": [
-                          "GatewayDatabase",
-                          "Endpoint.Address"
+                        "Fn::Select": [
+                          0,
+                          {
+                            "Fn::Split": [
+                              "-",
+                              {
+                                "Fn::Select": [
+                                  2,
+                                  {
+                                    "Fn::Split": [
+                                      "/",
+                                      {
+                                        "Ref": "AWS::StackId"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
                         ]
-                      },
-                      "\",\n",
-                      "  \"db_name\": \"gateway\",\n",
-                      "  \"db_master_secret\": \"",
-                      {
-                        "Fn::GetAtt": [
-                          "GatewayDatabase",
-                          "MasterUserSecret.SecretArn"
-                        ]
-                      },
-                      "\",\n",
-                      "  \"db_app_secret\": \"",
-                      {
-                        "Ref": "DatabaseAppSecret"
-                      },
-                      "\",\n",
-                      "  \"app_secret\": \"",
-                      {
-                        "Ref": "ApplicationSecret"
-                      },
-                      "\",\n",
-                      "  \"bucket\": \"",
-                      {
-                        "Ref": "FilesBucket"
-                      },
-                      "\",\n",
-                      "  \"alb_arn\": \"",
-                      {
-                        "Ref": "GatewayALB"
-                      },
-                      "\",\n",
-                      "  \"target_group_name\": \"",
-                      {
-                        "Fn::Join": [
-                          "",
-                          [
-                            "gw-",
-                            {
-                              "Fn::Select": [
-                                0,
-                                {
-                                  "Fn::Split": [
-                                    "-",
-                                    {
-                                      "Fn::Select": [
-                                        2,
-                                        {
-                                          "Fn::Split": [
-                                            "/",
-                                            {
-                                              "Ref": "AWS::StackId"
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        ]
-                      },
-                      "\",\n",
-                      "  \"dashboard_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "-health\",\n",
-                      "  \"topic_arn\": \"",
-                      {
-                        "Ref": "AlertTopic"
-                      },
-                      "\",\n",
-                      "  \"stack_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "\",\n",
-                      "  \"instance_name\": \"",
-                      "app-b",
-                      "\",\n",
-                      "  \"zone\": \"",
-                      {
-                        "Ref": "ZoneB"
-                      },
-                      "\",\n",
-                      "  \"alarm_name\": \"",
-                      {
-                        "Ref": "AWS::StackName"
-                      },
-                      "-healthy-targets\",\n",
-                      "  \"log_group\": \"",
-                      {
-                        "Ref": "AppLogs"
-                      },
-                      "\",\n",
-                      "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
-                      "}\n"
+                      }
                     ]
                   ]
                 },
+                "\",\n",
+                "  \"dashboard_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-health\",\n",
+                "  \"topic_arn\": \"",
+                {
+                  "Ref": "AlertTopic"
+                },
+                "\",\n",
+                "  \"stack_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "\",\n",
+                "  \"instance_name\": \"",
+                "app-b",
+                "\",\n",
+                "  \"zone\": \"",
+                {
+                  "Ref": "ZoneB"
+                },
+                "\",\n",
+                "  \"alarm_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-healthy-targets\",\n",
+                "  \"log_group\": \"",
+                {
+                  "Ref": "AppLogs"
+                },
+                "\",\n",
+                "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
+                "}\n",
                 "EOF\n",
                 "echo run-bootstrap > /var/log/gateway-setup-stage\n",
                 "trap - EXIT\n",
@@ -1845,7 +1835,7 @@
       "CreationPolicy": {
         "ResourceSignal": {
           "Count": 1,
-          "Timeout": "PT35M"
+          "Timeout": "PT50M"
         }
       }
     },
