@@ -152,7 +152,6 @@ phase userdata-start
 signal_reason() {
   stage=$(cat /var/log/gateway-setup-stage 2>/dev/null || echo userdata-start)
   err=$(tr '\\n' ' ' </var/log/gateway-setup-error 2>/dev/null | cut -c1-100 || true)
-  # Do not use bash ${var:-} here: Fn::Sub treats ${...} as CFN variables.
   if test -n "$err"; then printf 'Setup exit %s; stage: %s; error: %s' "$1" "$stage" "$err"
   else printf 'Setup exit %s; stage: %s' "$1" "$stage"; fi
 }
