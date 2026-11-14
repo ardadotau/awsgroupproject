@@ -1,0 +1,12 @@
+01 Login + dummy upload (hide password)
+02 S3 object private/encrypted + record visible in portal
+03 Two Healthy targets, two AZs
+04 Shared records across both servers
+05 Dashboard with metrics
+06 Alarm config + OK baseline
+07 SNS Confirmed
+08 Stop ONE instance or operator failure test
+09 ALARM + email
+10 Recovery
+11 Video 2:30 while live
+12 Report: self-signed cert + single NAT egress trade-off

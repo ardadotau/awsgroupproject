@@ -1,0 +1,39 @@
+NEW APPROACH — S3 BOOTSTRAP (use this, not the old Simple zip)
+
+Why different
+- App code is uploaded to S3 first
+- EC2 UserData only downloads it (tiny script)
+- Template has ZERO Fn::Sub → no more "variable names in Fn::Sub" errors
+- Still real: 2 AZ apps, Multi-AZ RDS, ALB HTTPS, S3 uploads, dashboard, SNS
+
+--------------------------------------------------------------------------------
+CLOUD SHELL (us-east-1)
+
+1) Upload Gateway_S3_Bootstrap.zip (Actions → Upload)
+
+2) Paste:
+
+mkdir -p ~/gateway-s3 && cd ~/gateway-s3
+unzip -o ~/Gateway_S3_Bootstrap.zip
+# if browser renamed zip, use: unzip -o ~/"Gateway_S3_Bootstrap (1).zip"
+cd Gateway_S3_Bootstrap
+python3 tools/prepare_lab.py --output gateway-stack-ready-s3.json
+
+3) Actions → Download file → paste the full path printed for gateway-stack-ready-s3.json
+
+4) CloudFormation → Create stack → Upload gateway-stack-ready-s3.json
+   - AlertEmail = your email
+   - Keep all other defaults (cert, LabRole, bootstrap bucket already filled)
+   - ApplicationHostname: N/A (not in this template)
+   - Permissions: leave IAM role EMPTY (Remove LabRole if selected)
+   - Create stack → wait CREATE_COMPLETE
+
+5) Confirm SNS email → Outputs → ApplicationSecretArn → login password
+   → open ApplicationURL (accept cert warning)
+
+6) Capture evidence → DELETE stack → empty retained upload bucket
+
+--------------------------------------------------------------------------------
+If prepare_lab.py fails
+Paste the full error. Common: IAM read denied, ACM import denied, or bucket name taken
+(re-run with --bucket gw-boot-yourname-123456).

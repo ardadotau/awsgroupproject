@@ -1,0 +1,2035 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "INFS3701 Gateway S3-bootstrap: app code pulled from BootstrapBucket. UserData has no Fn::Sub.",
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "1) Email"
+          },
+          "Parameters": [
+            "AlertEmail"
+          ]
+        },
+        {
+          "Label": {
+            "default": "2) HTTPS cert + lab IAM (prepare fills these)"
+          },
+          "Parameters": [
+            "CertificateArn",
+            "ExistingInstanceProfile",
+            "ExistingRoleArn"
+          ]
+        },
+        {
+          "Label": {
+            "default": "3) Bootstrap S3 (prepare fills these)"
+          },
+          "Parameters": [
+            "BootstrapBucket",
+            "BootstrapPrefix"
+          ]
+        },
+        {
+          "Label": {
+            "default": "4) Optional sizing"
+          },
+          "Parameters": [
+            "ZoneA",
+            "ZoneB",
+            "InstanceType",
+            "DBInstanceClass",
+            "AdminUsername"
+          ]
+        }
+      ]
+    }
+  },
+  "Parameters": {
+    "ExistingInstanceProfile": {
+      "Type": "String",
+      "Default": "LabInstanceProfile",
+      "AllowedPattern": "[A-Za-z0-9+=,.@_-]+",
+      "Description": "Existing EC2 instance profile (LabInstanceProfile)."
+    },
+    "ExistingRoleArn": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^$|arn:aws:iam::[0-9]{12}:role/.+",
+      "Description": "LabRole ARN. prepare fills this."
+    },
+    "CertificateArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:acm:us-east-1:[0-9]{12}:certificate/[A-Za-z0-9-]+",
+      "Description": "ACM certificate ARN (self-signed lab cert is fine)."
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "AllowedPattern": "[^\\s@]+@[^\\s@]+\\.[^\\s@]+",
+      "Description": "SNS alert email \u2014 confirm subscription after create."
+    },
+    "AdminUsername": {
+      "Type": "String",
+      "Default": "admin",
+      "AllowedPattern": "[A-Za-z][A-Za-z0-9_-]{2,31}"
+    },
+    "BootstrapBucket": {
+      "Type": "String",
+      "AllowedPattern": "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]",
+      "Description": "Bucket where prepare uploaded bootstrap.sh and app.tgz."
+    },
+    "BootstrapPrefix": {
+      "Type": "String",
+      "Default": "gateway/",
+      "AllowedPattern": "^[a-zA-Z0-9!_.*'()/+=:@,-]*/$",
+      "Description": "Key prefix ending with /"
+    },
+    "ZoneA": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Default": "us-east-1a"
+    },
+    "ZoneB": {
+      "Type": "AWS::EC2::AvailabilityZone::Name",
+      "Default": "us-east-1b"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.micro",
+      "AllowedValues": [
+        "t3.micro",
+        "t3.small"
+      ]
+    },
+    "DBInstanceClass": {
+      "Type": "String",
+      "Default": "db.t3.micro",
+      "AllowedValues": [
+        "db.t3.micro",
+        "db.t3.small"
+      ]
+    },
+    "DBEngineVersion": {
+      "Type": "String",
+      "Default": "16",
+      "AllowedPattern": "16(\\.[0-9]+)?"
+    },
+    "LatestAmiId": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    }
+  },
+  "Rules": {
+    "DifferentZones": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Equals": [
+                  {
+                    "Ref": "ZoneA"
+                  },
+                  {
+                    "Ref": "ZoneB"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "Choose two different AZs."
+        }
+      ]
+    },
+    "RegionRestriction": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Equals": [
+              {
+                "Ref": "AWS::Region"
+              },
+              "us-east-1"
+            ]
+          },
+          "AssertDescription": "Deploy in us-east-1."
+        }
+      ]
+    }
+  },
+  "Conditions": {
+    "HasExistingRoleArn": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ExistingRoleArn"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "GatewayVPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-vpc"
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-igw"
+          }
+        ]
+      }
+    },
+    "GatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicRoutes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-routes"
+          }
+        ]
+      }
+    },
+    "PublicDefaultRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        }
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "DataRoutes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-data-routes"
+          }
+        ]
+      }
+    },
+    "NatEipA": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat-ip"
+          }
+        ]
+      },
+      "DependsOn": "GatewayAttachment"
+    },
+    "PublicSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.1.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-a"
+          }
+        ]
+      }
+    },
+    "AppSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.11.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-a"
+          }
+        ]
+      }
+    },
+    "DataSubnetA": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneA"
+        },
+        "CidrBlock": "10.0.21.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-data-a"
+          }
+        ]
+      }
+    },
+    "AppRoutesA": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-routes-a"
+          }
+        ]
+      }
+    },
+    "PublicRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        }
+      }
+    },
+    "AppRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "AppSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "AppRoutesA"
+        }
+      }
+    },
+    "DataRouteAssociationA": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "DataSubnetA"
+        },
+        "RouteTableId": {
+          "Ref": "DataRoutes"
+        }
+      }
+    },
+    "PublicSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.2.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-public-b"
+          }
+        ]
+      }
+    },
+    "AppSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.12.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-b"
+          }
+        ]
+      }
+    },
+    "DataSubnetB": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "AvailabilityZone": {
+          "Ref": "ZoneB"
+        },
+        "CidrBlock": "10.0.22.0/24",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-data-b"
+          }
+        ]
+      }
+    },
+    "AppRoutesB": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-routes-b"
+          }
+        ]
+      }
+    },
+    "PublicRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRoutes"
+        }
+      }
+    },
+    "AppRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "AppSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "AppRoutesB"
+        }
+      }
+    },
+    "DataRouteAssociationB": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "DataSubnetB"
+        },
+        "RouteTableId": {
+          "Ref": "DataRoutes"
+        }
+      }
+    },
+    "NatGatewayA": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnetA"
+        },
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NatEipA",
+            "AllocationId"
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-nat"
+          }
+        ]
+      }
+    },
+    "AppDefaultRouteA": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesA"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayA"
+        }
+      }
+    },
+    "AppDefaultRouteB": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "AppRoutesB"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NatGatewayA"
+        }
+      }
+    },
+    "S3Endpoint": {
+      "Type": "AWS::EC2::VPCEndpoint",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "ServiceName": {
+          "Fn::Join": [
+            "",
+            [
+              "com.amazonaws.",
+              {
+                "Ref": "AWS::Region"
+              },
+              ".s3"
+            ]
+          ]
+        },
+        "VpcEndpointType": "Gateway",
+        "RouteTableIds": [
+          {
+            "Ref": "AppRoutesA"
+          },
+          {
+            "Ref": "AppRoutesB"
+          }
+        ]
+      }
+    },
+    "AppSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "Private app; ALB HTTPS only inbound.",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-sg"
+          }
+        ]
+      }
+    },
+    "AlbSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "Public ALB 80/443",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8443,
+            "ToPort": 8443,
+            "DestinationSecurityGroupId": {
+              "Fn::GetAtt": [
+                "AppSecurityGroup",
+                "GroupId"
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-alb-sg"
+          }
+        ]
+      }
+    },
+    "AlbToAppIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": {
+          "Fn::GetAtt": [
+            "AppSecurityGroup",
+            "GroupId"
+          ]
+        },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "SourceSecurityGroupId": {
+          "Fn::GetAtt": [
+            "AlbSecurityGroup",
+            "GroupId"
+          ]
+        }
+      }
+    },
+    "DatabaseSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "GroupDescription": "Postgres from app only",
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 5432,
+            "ToPort": 5432,
+            "SourceSecurityGroupId": {
+              "Fn::GetAtt": [
+                "AppSecurityGroup",
+                "GroupId"
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-db-sg"
+          }
+        ]
+      }
+    },
+    "FilesBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "OwnershipControls": {
+          "Rules": [
+            {
+              "ObjectOwnership": "BucketOwnerEnforced"
+            }
+          ]
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-files"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "FilesBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "FilesBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AppObjects",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::If": [
+                    "HasExistingRoleArn",
+                    {
+                      "Ref": "ExistingRoleArn"
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:aws:iam::",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":role/LabRole"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:AbortMultipartUpload",
+                "s3:ListMultipartUploadParts"
+              ],
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "FilesBucket",
+                        "Arn"
+                      ]
+                    },
+                    "/assets/*"
+                  ]
+                ]
+              }
+            },
+            {
+              "Sid": "AppList",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::If": [
+                    "HasExistingRoleArn",
+                    {
+                      "Ref": "ExistingRoleArn"
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:aws:iam::",
+                          {
+                            "Ref": "AWS::AccountId"
+                          },
+                          ":role/LabRole"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              },
+              "Action": "s3:ListBucket",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "FilesBucket",
+                  "Arn"
+                ]
+              },
+              "Condition": {
+                "StringLike": {
+                  "s3:prefix": [
+                    "assets/",
+                    "assets/*"
+                  ]
+                }
+              }
+            },
+            {
+              "Sid": "DenyInsecure",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "FilesBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "FilesBucket",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false",
+                  "aws:PrincipalIsAWSService": "false"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "DatabaseAppSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "App DB user",
+        "GenerateSecretString": {
+          "SecretStringTemplate": "{\"username\":\"gateway_app\"}",
+          "GenerateStringKey": "password",
+          "PasswordLength": 40,
+          "ExcludePunctuation": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "ApplicationSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": "Portal login",
+        "GenerateSecretString": {
+          "SecretStringTemplate": {
+            "Fn::Join": [
+              "",
+              [
+                "{\"username\":\"",
+                {
+                  "Ref": "AdminUsername"
+                },
+                "\"}"
+              ]
+            ]
+          },
+          "GenerateStringKey": "password",
+          "PasswordLength": 40,
+          "ExcludePunctuation": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "DatabaseSubnets": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": "Private data subnets",
+        "SubnetIds": [
+          {
+            "Ref": "DataSubnetA"
+          },
+          {
+            "Ref": "DataSubnetB"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "DatabaseParameters": {
+      "Type": "AWS::RDS::DBParameterGroup",
+      "Properties": {
+        "Description": "Force SSL",
+        "Family": "postgres16",
+        "Parameters": {
+          "rds.force_ssl": "1"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "GatewayDatabase": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "Engine": "postgres",
+        "EngineVersion": {
+          "Ref": "DBEngineVersion"
+        },
+        "DBParameterGroupName": {
+          "Ref": "DatabaseParameters"
+        },
+        "DBInstanceClass": {
+          "Ref": "DBInstanceClass"
+        },
+        "DBName": "gateway",
+        "MasterUsername": "gateway_admin",
+        "ManageMasterUserPassword": true,
+        "AllocatedStorage": "20",
+        "StorageType": "gp3",
+        "StorageEncrypted": true,
+        "MultiAZ": true,
+        "PubliclyAccessible": false,
+        "Port": "5432",
+        "DBSubnetGroupName": {
+          "Ref": "DatabaseSubnets"
+        },
+        "VPCSecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "DatabaseSecurityGroup",
+              "GroupId"
+            ]
+          }
+        ],
+        "BackupRetentionPeriod": 1,
+        "DeleteAutomatedBackups": true,
+        "DeletionProtection": false,
+        "MonitoringInterval": 0,
+        "EnablePerformanceInsights": false,
+        "AutoMinorVersionUpgrade": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-postgres"
+          }
+        ]
+      },
+      "DeletionPolicy": "Delete",
+      "UpdateReplacePolicy": "Delete"
+    },
+    "AppLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Join": [
+            "",
+            [
+              "/",
+              {
+                "Ref": "AWS::StackName"
+              },
+              "/gateway"
+            ]
+          ]
+        },
+        "RetentionInDays": 1,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "AlertTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "Gateway alerts",
+        "TopicName": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "-alerts"
+            ]
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          }
+        ]
+      }
+    },
+    "AlertTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "Topics": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CW",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Action": "sns:Publish",
+              "Resource": {
+                "Ref": "AlertTopic"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:cloudwatch:",
+                        {
+                          "Ref": "AWS::Region"
+                        },
+                        ":",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":alarm:",
+                        {
+                          "Ref": "AWS::StackName"
+                        },
+                        "-*"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "EmailSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "AlertTopic"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "AlertEmail"
+        }
+      }
+    },
+    "GatewayALB": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Properties": {
+        "Scheme": "internet-facing",
+        "Type": "application",
+        "IpAddressType": "ipv4",
+        "Subnets": [
+          {
+            "Ref": "PublicSubnetA"
+          },
+          {
+            "Ref": "PublicSubnetB"
+          }
+        ],
+        "SecurityGroups": [
+          {
+            "Fn::GetAtt": [
+              "AlbSecurityGroup",
+              "GroupId"
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-alb"
+          }
+        ]
+      },
+      "DependsOn": [
+        "GatewayAttachment",
+        "PublicDefaultRoute"
+      ]
+    },
+    "GatewayTargets": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Properties": {
+        "Name": {
+          "Fn::Join": [
+            "",
+            [
+              "gw-",
+              {
+                "Fn::Select": [
+                  0,
+                  {
+                    "Fn::Split": [
+                      "-",
+                      {
+                        "Fn::Select": [
+                          2,
+                          {
+                            "Fn::Split": [
+                              "/",
+                              {
+                                "Ref": "AWS::StackId"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          ]
+        },
+        "VpcId": {
+          "Ref": "GatewayVPC"
+        },
+        "TargetType": "instance",
+        "Protocol": "HTTPS",
+        "Port": 8443,
+        "HealthCheckProtocol": "HTTPS",
+        "HealthCheckPath": "/health",
+        "HealthCheckIntervalSeconds": 15,
+        "HealthCheckTimeoutSeconds": 5,
+        "HealthyThresholdCount": 2,
+        "UnhealthyThresholdCount": 2,
+        "Matcher": {
+          "HttpCode": "200"
+        },
+        "TargetGroupAttributes": [
+          {
+            "Key": "deregistration_delay.timeout_seconds",
+            "Value": "15"
+          },
+          {
+            "Key": "stickiness.enabled",
+            "Value": "false"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-targets"
+          }
+        ],
+        "Targets": [
+          {
+            "Id": {
+              "Ref": "AppServerA"
+            },
+            "Port": 8443
+          },
+          {
+            "Id": {
+              "Ref": "AppServerB"
+            },
+            "Port": 8443
+          }
+        ]
+      }
+    },
+    "HttpsListener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "LoadBalancerArn": {
+          "Ref": "GatewayALB"
+        },
+        "Protocol": "HTTPS",
+        "Port": 443,
+        "Certificates": [
+          {
+            "CertificateArn": {
+              "Ref": "CertificateArn"
+            }
+          }
+        ],
+        "SslPolicy": "ELBSecurityPolicy-TLS13-1-2-2021-06",
+        "DefaultActions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": {
+              "Ref": "GatewayTargets"
+            }
+          }
+        ]
+      }
+    },
+    "HttpRedirect": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Properties": {
+        "LoadBalancerArn": {
+          "Ref": "GatewayALB"
+        },
+        "Protocol": "HTTP",
+        "Port": 80,
+        "DefaultActions": [
+          {
+            "Type": "redirect",
+            "RedirectConfig": {
+              "Protocol": "HTTPS",
+              "Port": "443",
+              "StatusCode": "HTTP_301"
+            }
+          }
+        ]
+      }
+    },
+    "AppServerA": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "LatestAmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "ExistingInstanceProfile"
+        },
+        "Monitoring": false,
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "AppSubnetA"
+            },
+            "GroupSet": [
+              {
+                "Fn::GetAtt": [
+                  "AppSecurityGroup",
+                  "GroupId"
+                ]
+              }
+            ],
+            "AssociatePublicIpAddress": false,
+            "DeleteOnTermination": true
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "Encrypted": true,
+              "VolumeSize": 8,
+              "VolumeType": "gp3",
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash\n",
+                "set -ux\n",
+                "exec > /var/log/gateway-userdata.log 2>&1\n",
+                "echo userdata-start > /var/log/gateway-setup-stage\n",
+                "echo wait-network > /var/log/gateway-setup-stage\n",
+                "ok=0\n",
+                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do\n",
+                "  if command -v curl >/dev/null && curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
+                "  sleep 5\n",
+                "done\n",
+                "echo install-tools > /var/log/gateway-setup-stage\n",
+                "timeout 240 dnf install -y aws-cfn-bootstrap curl unzip || dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "test -x /opt/aws/bin/cfn-signal\n",
+                "trap '/opt/aws/bin/cfn-signal -e $? --reason userdata-failed --stack ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " --resource ",
+                "AppServerA",
+                " --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                " || true' EXIT\n",
+                "test \"$ok\" -eq 1\n",
+                "command -v aws >/dev/null || timeout 180 dnf install -y awscli\n",
+                "echo download-bootstrap > /var/log/gateway-setup-stage\n",
+                "aws s3 cp s3://",
+                {
+                  "Ref": "BootstrapBucket"
+                },
+                "/",
+                {
+                  "Ref": "BootstrapPrefix"
+                },
+                "bootstrap.sh /tmp/bootstrap.sh --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "aws s3 cp s3://",
+                {
+                  "Ref": "BootstrapBucket"
+                },
+                "/",
+                {
+                  "Ref": "BootstrapPrefix"
+                },
+                "app.tgz /tmp/gateway-app.tgz --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "chmod +x /tmp/bootstrap.sh\n",
+                "install -d -m 750 /etc/gateway\n",
+                "echo write-config > /var/log/gateway-setup-stage\n",
+                "cat > /etc/gateway/runtime.json << \"EOF\"\n",
+                "{\n",
+                "  \"region\": \"",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\",\n",
+                "  \"db_host\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "Endpoint.Address"
+                  ]
+                },
+                "\",\n",
+                "  \"db_name\": \"gateway\",\n",
+                "  \"db_master_secret\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "MasterUserSecret.SecretArn"
+                  ]
+                },
+                "\",\n",
+                "  \"db_app_secret\": \"",
+                {
+                  "Ref": "DatabaseAppSecret"
+                },
+                "\",\n",
+                "  \"app_secret\": \"",
+                {
+                  "Ref": "ApplicationSecret"
+                },
+                "\",\n",
+                "  \"bucket\": \"",
+                {
+                  "Ref": "FilesBucket"
+                },
+                "\",\n",
+                "  \"alb_arn\": \"",
+                {
+                  "Ref": "GatewayALB"
+                },
+                "\",\n",
+                "  \"target_group_name\": \"",
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "gw-",
+                      {
+                        "Fn::Select": [
+                          0,
+                          {
+                            "Fn::Split": [
+                              "-",
+                              {
+                                "Fn::Select": [
+                                  2,
+                                  {
+                                    "Fn::Split": [
+                                      "/",
+                                      {
+                                        "Ref": "AWS::StackId"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                "\",\n",
+                "  \"dashboard_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-health\",\n",
+                "  \"topic_arn\": \"",
+                {
+                  "Ref": "AlertTopic"
+                },
+                "\",\n",
+                "  \"stack_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "\",\n",
+                "  \"instance_name\": \"",
+                "app-a",
+                "\",\n",
+                "  \"zone\": \"",
+                {
+                  "Ref": "ZoneA"
+                },
+                "\",\n",
+                "  \"alarm_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-healthy-targets\",\n",
+                "  \"log_group\": \"",
+                {
+                  "Ref": "AppLogs"
+                },
+                "\",\n",
+                "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
+                "}\n",
+                "EOF\n",
+                "echo run-bootstrap > /var/log/gateway-setup-stage\n",
+                "trap - EXIT\n",
+                "bash /tmp/bootstrap.sh ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " ",
+                "AppServerA",
+                " ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n"
+              ]
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-a"
+          }
+        ]
+      },
+      "DependsOn": [
+        "NatGatewayA",
+        "AppDefaultRouteA",
+        "AppRouteAssociationA",
+        "S3Endpoint",
+        "FilesBucketPolicy",
+        "AlbToAppIngress"
+      ],
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": 1,
+          "Timeout": "PT50M"
+        }
+      }
+    },
+    "AppServerB": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "LatestAmiId"
+        },
+        "InstanceType": {
+          "Ref": "InstanceType"
+        },
+        "IamInstanceProfile": {
+          "Ref": "ExistingInstanceProfile"
+        },
+        "Monitoring": false,
+        "NetworkInterfaces": [
+          {
+            "DeviceIndex": "0",
+            "SubnetId": {
+              "Ref": "AppSubnetB"
+            },
+            "GroupSet": [
+              {
+                "Fn::GetAtt": [
+                  "AppSecurityGroup",
+                  "GroupId"
+                ]
+              }
+            ],
+            "AssociatePublicIpAddress": false,
+            "DeleteOnTermination": true
+          }
+        ],
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "Encrypted": true,
+              "VolumeSize": 8,
+              "VolumeType": "gp3",
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled",
+          "HttpPutResponseHopLimit": 1
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash\n",
+                "set -ux\n",
+                "exec > /var/log/gateway-userdata.log 2>&1\n",
+                "echo userdata-start > /var/log/gateway-setup-stage\n",
+                "echo wait-network > /var/log/gateway-setup-stage\n",
+                "ok=0\n",
+                "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do\n",
+                "  if command -v curl >/dev/null && curl -fsI --max-time 5 https://aws.amazon.com >/dev/null; then ok=1; break; fi\n",
+                "  sleep 5\n",
+                "done\n",
+                "echo install-tools > /var/log/gateway-setup-stage\n",
+                "timeout 240 dnf install -y aws-cfn-bootstrap curl unzip || dnf install -y aws-cfn-bootstrap curl unzip\n",
+                "test -x /opt/aws/bin/cfn-signal\n",
+                "trap '/opt/aws/bin/cfn-signal -e $? --reason userdata-failed --stack ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " --resource ",
+                "AppServerB",
+                " --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                " || true' EXIT\n",
+                "test \"$ok\" -eq 1\n",
+                "command -v aws >/dev/null || timeout 180 dnf install -y awscli\n",
+                "echo download-bootstrap > /var/log/gateway-setup-stage\n",
+                "aws s3 cp s3://",
+                {
+                  "Ref": "BootstrapBucket"
+                },
+                "/",
+                {
+                  "Ref": "BootstrapPrefix"
+                },
+                "bootstrap.sh /tmp/bootstrap.sh --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "aws s3 cp s3://",
+                {
+                  "Ref": "BootstrapBucket"
+                },
+                "/",
+                {
+                  "Ref": "BootstrapPrefix"
+                },
+                "app.tgz /tmp/gateway-app.tgz --region ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n",
+                "chmod +x /tmp/bootstrap.sh\n",
+                "install -d -m 750 /etc/gateway\n",
+                "echo write-config > /var/log/gateway-setup-stage\n",
+                "cat > /etc/gateway/runtime.json << \"EOF\"\n",
+                "{\n",
+                "  \"region\": \"",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\",\n",
+                "  \"db_host\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "Endpoint.Address"
+                  ]
+                },
+                "\",\n",
+                "  \"db_name\": \"gateway\",\n",
+                "  \"db_master_secret\": \"",
+                {
+                  "Fn::GetAtt": [
+                    "GatewayDatabase",
+                    "MasterUserSecret.SecretArn"
+                  ]
+                },
+                "\",\n",
+                "  \"db_app_secret\": \"",
+                {
+                  "Ref": "DatabaseAppSecret"
+                },
+                "\",\n",
+                "  \"app_secret\": \"",
+                {
+                  "Ref": "ApplicationSecret"
+                },
+                "\",\n",
+                "  \"bucket\": \"",
+                {
+                  "Ref": "FilesBucket"
+                },
+                "\",\n",
+                "  \"alb_arn\": \"",
+                {
+                  "Ref": "GatewayALB"
+                },
+                "\",\n",
+                "  \"target_group_name\": \"",
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "gw-",
+                      {
+                        "Fn::Select": [
+                          0,
+                          {
+                            "Fn::Split": [
+                              "-",
+                              {
+                                "Fn::Select": [
+                                  2,
+                                  {
+                                    "Fn::Split": [
+                                      "/",
+                                      {
+                                        "Ref": "AWS::StackId"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                "\",\n",
+                "  \"dashboard_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-health\",\n",
+                "  \"topic_arn\": \"",
+                {
+                  "Ref": "AlertTopic"
+                },
+                "\",\n",
+                "  \"stack_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "\",\n",
+                "  \"instance_name\": \"",
+                "app-b",
+                "\",\n",
+                "  \"zone\": \"",
+                {
+                  "Ref": "ZoneB"
+                },
+                "\",\n",
+                "  \"alarm_name\": \"",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                "-healthy-targets\",\n",
+                "  \"log_group\": \"",
+                {
+                  "Ref": "AppLogs"
+                },
+                "\",\n",
+                "  \"certificate_ca\": \"/opt/gateway/rds-ca.pem\"\n",
+                "}\n",
+                "EOF\n",
+                "echo run-bootstrap > /var/log/gateway-setup-stage\n",
+                "trap - EXIT\n",
+                "bash /tmp/bootstrap.sh ",
+                {
+                  "Ref": "AWS::StackName"
+                },
+                " ",
+                "AppServerB",
+                " ",
+                {
+                  "Ref": "AWS::Region"
+                },
+                "\n"
+              ]
+            ]
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "INFS3701-Corporate-Gateway"
+          },
+          {
+            "Key": "Name",
+            "Value": "gateway-app-b"
+          }
+        ]
+      },
+      "DependsOn": [
+        "NatGatewayA",
+        "AppDefaultRouteB",
+        "AppRouteAssociationB",
+        "S3Endpoint",
+        "FilesBucketPolicy",
+        "AlbToAppIngress"
+      ],
+      "CreationPolicy": {
+        "ResourceSignal": {
+          "Count": 1,
+          "Timeout": "PT50M"
+        }
+      }
+    },
+    "HealthyTargetsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "-healthy-targets"
+            ]
+          ]
+        },
+        "AlarmDescription": "HealthyHostCount minimum < 2 for 2 minutes",
+        "Namespace": "AWS/ApplicationELB",
+        "MetricName": "HealthyHostCount",
+        "Dimensions": [
+          {
+            "Name": "LoadBalancer",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayALB",
+                "LoadBalancerFullName"
+              ]
+            }
+          },
+          {
+            "Name": "TargetGroup",
+            "Value": {
+              "Fn::GetAtt": [
+                "GatewayTargets",
+                "TargetGroupFullName"
+              ]
+            }
+          }
+        ],
+        "Statistic": "Minimum",
+        "Period": 60,
+        "EvaluationPeriods": 2,
+        "DatapointsToAlarm": 2,
+        "Threshold": 2,
+        "ComparisonOperator": "LessThanThreshold",
+        "TreatMissingData": "breaching",
+        "AlarmActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ],
+        "OKActions": [
+          {
+            "Ref": "AlertTopic"
+          }
+        ]
+      },
+      "DependsOn": "AlertTopicPolicy"
+    },
+    "HealthDashboard": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardName": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "AWS::StackName"
+              },
+              "-health"
+            ]
+          ]
+        },
+        "DashboardBody": {
+          "Fn::Join": [
+            "",
+            [
+              "{\"widgets\":[{\"type\":\"metric\",\"x\":0,\"y\":0,\"width\":24,\"height\":6,\"properties\":{\"title\":\"Healthy hosts\",\"region\":\"",
+              {
+                "Ref": "AWS::Region"
+              },
+              "\",\"metrics\":[[\"AWS/ApplicationELB\",\"HealthyHostCount\",\"LoadBalancer\",\"",
+              {
+                "Fn::GetAtt": [
+                  "GatewayALB",
+                  "LoadBalancerFullName"
+                ]
+              },
+              "\",\"TargetGroup\",\"",
+              {
+                "Fn::GetAtt": [
+                  "GatewayTargets",
+                  "TargetGroupFullName"
+                ]
+              },
+              "\",{\"stat\":\"Minimum\"}]],\"period\":60,\"stat\":\"Average\",\"view\":\"timeSeries\"}}]}"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "ApplicationURL": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            {
+              "Fn::GetAtt": [
+                "GatewayALB",
+                "DNSName"
+              ]
+            }
+          ]
+        ]
+      },
+      "Description": "Portal URL (cert warning expected with lab cert)"
+    },
+    "LoadBalancerDNS": {
+      "Value": {
+        "Fn::GetAtt": [
+          "GatewayALB",
+          "DNSName"
+        ]
+      },
+      "Description": "ALB DNS"
+    },
+    "CloudWatchDashboardURL": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            {
+              "Ref": "AWS::Region"
+            },
+            ".console.aws.amazon.com/cloudwatch/home?region=",
+            {
+              "Ref": "AWS::Region"
+            },
+            "#dashboards:name=",
+            {
+              "Ref": "AWS::StackName"
+            },
+            "-health"
+          ]
+        ]
+      },
+      "Description": "Dashboard"
+    },
+    "AppServerA": {
+      "Value": {
+        "Ref": "AppServerA"
+      },
+      "Description": "Instance A"
+    },
+    "AppServerB": {
+      "Value": {
+        "Ref": "AppServerB"
+      },
+      "Description": "Instance B"
+    },
+    "BucketName": {
+      "Value": {
+        "Ref": "FilesBucket"
+      },
+      "Description": "Upload bucket (retained on delete)"
+    },
+    "ApplicationSecretArn": {
+      "Value": {
+        "Ref": "ApplicationSecret"
+      },
+      "Description": "Portal login secret"
+    },
+    "AlertTopicArn": {
+      "Value": {
+        "Ref": "AlertTopic"
+      },
+      "Description": "SNS topic"
+    },
+    "HealthyTargetsAlarmName": {
+      "Value": {
+        "Ref": "HealthyTargetsAlarm"
+      },
+      "Description": "Main alarm"
+    },
+    "BootstrapBucketUsed": {
+      "Value": {
+        "Ref": "BootstrapBucket"
+      },
+      "Description": "Bootstrap code bucket"
+    }
+  }
+}

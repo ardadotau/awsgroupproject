@@ -1,0 +1,17 @@
+INFS3701 12-month cost estimate (us-east-1, On-Demand, optimised)
+
+Monthly ≈ $117.10 USD
+12 months ≈ $1,405.19 USD
+
+Main drivers:
+- NAT Gateway (1×, optimised): $33.30/mo
+- Public IPv4 (NAT + ALB): $10.95/mo
+- Application Load Balancer: $22.27/mo
+- EC2 t3.micro × 2 (app tier): $15.18/mo
+- EBS gp3 8 GiB × 2: $1.28/mo
+- RDS PostgreSQL db.t3.micro Multi-AZ: $24.82/mo
+- RDS gp3 storage 20 GiB Multi-AZ: $4.60/mo
+- Secrets Manager + CloudWatch + SNS (light): $4.70/mo
+
+Optimisation: 1× NAT (not 2); t3.micro / db.t3.micro; low demo traffic.
+Rebuild at https://calculator.aws with the same rows if a share link is required.
