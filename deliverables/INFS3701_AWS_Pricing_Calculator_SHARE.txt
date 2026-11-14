@@ -1,0 +1,11 @@
+Official AWS Pricing Calculator estimate (us-east-1, 12-month)
+
+Share URL:
+https://calculator.aws/#/estimate?id=b154a2ffd3a839596276e52c5dcb93c0f55dfe89
+
+Exported PDF (Export → PDF from calculator.aws):
+artifacts/INFS3701_AWS_Pricing_Calculator_12_Month.pdf
+
+Estimate name: INFS3701 Corporate Gateway us-east-1 12mo
+Services: NAT Gateway (1), ALB (1), EC2 2x t3.micro, EBS 2x8GB gp3, RDS PostgreSQL Multi-AZ db.t3.micro 20GB, S3 5GB
+UI summary at export: ~$104.83/mo, ~$1,257.96 for 12 months
